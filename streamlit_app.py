@@ -4,13 +4,13 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Δ per Strike + Colored Panel B)")
+st.title("📊 Options Data Viewer (ΔVolume + ΔOI per Strike)")
 
-# --------------------
+# -----------------------------------------
 # Upload CSVs
-# --------------------
+# -----------------------------------------
 files = st.file_uploader(
-    "Upload multiple CSVs (_DDMMYYYY_HHMMSS.csv)",
+    "Upload multiple CSV files (_DDMMYYYY_HHMMSS.csv)",
     type=["csv"],
     accept_multiple_files=True,
 )
@@ -25,41 +25,43 @@ def get_time_from_filename(name):
     d, mo, y, h, mi, s = m.groups()
     return f"{d}-{mo}-{y} {h}:{mi}:{s}"
 
-# --------------------
-# Combine data
-# --------------------
-data = []
+# -----------------------------------------
+# Combine all uploaded data
+# -----------------------------------------
+frames = []
 for f in files:
     df = pd.read_csv(f)
     df["timestamp"] = get_time_from_filename(f.name)
-    data.append(df)
+    frames.append(df)
 
-df = pd.concat(data)
+df = pd.concat(frames)
 df.dropna(subset=["timestamp"], inplace=True)
 df = df.sort_values("timestamp").reset_index(drop=True)
 
-# --------------------
-# Compute per‑strike Δvolume & ΔOI
-# --------------------
+# -----------------------------------------
+# Compute per‑strike ΔVolume and ΔOI
+# -----------------------------------------
 for prefix in ["CE_", "PE_"]:
     vol_col = f"{prefix}totalTradedVolume"
     oi_col = f"{prefix}openInterest"
-    if vol_col not in df.columns:
+    if vol_col not in df.columns or oi_col not in df.columns:
         continue
 
-    def calc_delta(group):
+    def add_deltas(group):
         group = group.sort_values("timestamp")
+        # Δ relative to previous timestamp of same strike
         group[f"{prefix}volChange"] = group[vol_col].diff().fillna(0)
-        if oi_col in group:
-            group[f"{prefix}oiChange"] = group[oi_col].diff().fillna(0)
+        group[f"{prefix}oiChange"] = group[oi_col].diff().fillna(0)
+        # Δ of Δ = change in ΔOI relative to prior file (same strike)
+        group[f"{prefix}oiDeltaDelta"] = group[f"{prefix}oiChange"].diff().fillna(0)
         return group
 
-    df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(calc_delta)
+    df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(add_deltas)
 
-# --------------------
-# Helper: plot metric
-# --------------------
-def plot_metric(metric, display, df, strike, opt_type, chart_type, color=None):
+# -----------------------------------------
+# Helper function for plotting
+# -----------------------------------------
+def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = []
     if opt_type in ["CE", "Both"]:
         prefixes.append("CE_")
@@ -67,44 +69,38 @@ def plot_metric(metric, display, df, strike, opt_type, chart_type, color=None):
         prefixes.append("PE_")
 
     for pre in prefixes:
+        col = f"{pre}{metric}"
+        if col not in df.columns:
+            continue
         tmp = df[df[f"{pre}strikePrice"] == strike].copy()
         tmp["time"] = pd.to_datetime(tmp["timestamp"], format="%d-%m-%Y %H:%M:%S")
         tmp = tmp.sort_values("time")
-        if f"{pre}{metric}" not in tmp.columns:
-            continue
 
         fig_func = px.line if chart_type == "Line" else px.bar
-        fig = fig_func(
-            tmp,
-            x="time",
-            y=f"{pre}{metric}",
-            title=f"{pre}{display}",
-            markers=True,
-        )
+        fig = fig_func(tmp, x="time", y=col, title=f"{pre}{label}", markers=True)
         if color:
-            # apply fixed color
             if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
             else:
                 fig.update_traces(marker_color=color)
         fig.update_layout(
             autosize=True,
-            height=450,
+            height=400,
             xaxis=dict(
                 tickmode="linear",
                 tickvals=tmp["time"],
-                tickfont=dict(size=9),
                 tickangle=-45,
+                tickfont=dict(size=9),
             ),
             xaxis_title="Time",
-            yaxis_title=display,
+            yaxis_title=label,
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# --------------------
-# Panel function
-# --------------------
-def panel(name, color=None, show_table=False):
+# -----------------------------------------
+# Panel setup (persistent via session_state)
+# -----------------------------------------
+def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
 
@@ -116,7 +112,6 @@ def panel(name, color=None, show_table=False):
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type")
     chart_type = st.radio("Chart Type", ["Line", "Bar"], key=f"{key}_chart")
 
-    # plot button
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
             "strike": strike,
@@ -126,30 +121,14 @@ def panel(name, color=None, show_table=False):
 
     saved = st.session_state.get(f"{key}_plot", None)
     if saved:
-        st.success(f"Strike: {saved['strike']} | Type: {saved['opt_type']}")
-        # charts
+        st.success(f"Strike {saved['strike']} | {saved['opt_type']}")
         plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
-        plot_metric("volChange", "Volume Δ", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
-        plot_metric("openInterest", "Open Interest", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
-        plot_metric("oiChange", "Open Interest Δ", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
+        plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
+        plot_metric("oiDeltaDelta", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
 
-        # show Δ table
-        if show_table:
-            st.markdown("#### 🔍 Volume Δ table")
-            prefixes = ["CE_", "PE_"] if saved["opt_type"] == "Both" else [f"{saved['opt_type']}_"]
-            for pre in prefixes:
-                cols = [f"{pre}strikePrice", "timestamp", f"{pre}totalTradedVolume", f"{pre}volChange"]
-                sub = df[df[f"{pre}strikePrice"] == saved["strike"]][cols].copy()
-                sub.rename(columns={
-                    f"{pre}strikePrice": "Strike",
-                    f"{pre}totalTradedVolume": "Total Volume",
-                    f"{pre}volChange": "Volume Δ"
-                }, inplace=True)
-                st.dataframe(sub.reset_index(drop=True), use_container_width=True)
-
-# --------------------
-# Layout: Panel A then B (green)
-# --------------------
-panel("Panel A", color=None, show_table=True)
+# -----------------------------------------
+# Layout: Panel A followed by Panel B (green)
+# -----------------------------------------
+panel("Panel A")
 st.markdown("---")
-panel("Panel B", color="green", show_table=True)
+panel("Panel B", color="green")
