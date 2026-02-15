@@ -8,7 +8,7 @@ import re
 # ---------------------------------------------------------------------
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Smart Column Detection · Dual Panels)")
+st.title("📊 Options Data Viewer (Auto-Strike Detection · Dual Panels)")
 
 # ---------------------------------------------------------------------
 # FILE UPLOAD + CLEAR BUTTON
@@ -43,7 +43,7 @@ def parse_filename(name):
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"
+    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # prefix T ➜ categorical label
 
 # ---------------------------------------------------------------------
 # READ + COMBINE FILES
@@ -74,31 +74,6 @@ df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=T
 df.columns = [c.strip().replace(" ", "_") for c in df.columns]
 
 # ---------------------------------------------------------------------
-# AUTO-DETECT PREFIXES (CE/PE or CALL/PUT)
-# ---------------------------------------------------------------------
-
-cols_lower = [c.lower() for c in df.columns]
-prefix_candidates = []
-for prefix in ["ce_", "pe_", "call_", "put_"]:
-    if any(c.startswith(prefix) for c in cols_lower):
-        prefix_candidates.append(prefix)
-
-if not prefix_candidates:
-    st.error("⚠️ No recognizable CE/PE or CALL/PUT columns found.")
-    st.write("Detected columns:", df.columns.tolist())
-    st.stop()
-
-def normalize_prefix(col):
-    """Normalize CALL_/PUT_ to CE_/PE_ for consistency."""
-    if col.lower().startswith("call_"):
-        return "CE_" + col.split("_", 1)[1]
-    elif col.lower().startswith("put_"):
-        return "PE_" + col.split("_", 1)[1]
-    return col
-
-df.columns = [normalize_prefix(c) for c in df.columns]
-
-# ---------------------------------------------------------------------
 # COMPUTE ΔVOLUME AND ΔOI PER STRIKE
 # ---------------------------------------------------------------------
 
@@ -114,6 +89,20 @@ for prefix in ["CE_", "PE_"]:
         return g
 
     df = df.groupby(strike, group_keys=False).apply(add_delta)
+
+# ---------------------------------------------------------------------
+# STRIKE COLUMN FINDER
+# ---------------------------------------------------------------------
+
+def get_strike_columns(dataframe):
+    """Return all column names containing 'strike' (case-insensitive)."""
+    return [col for col in dataframe.columns if re.search("strike", col, re.IGNORECASE)]
+
+strike_cols = get_strike_columns(df)
+if not strike_cols:
+    st.error("⚠️ No column containing 'strike' found.")
+    st.write("Detected columns:", df.columns.tolist())
+    st.stop()
 
 # ---------------------------------------------------------------------
 # PLOT HELPER
@@ -162,27 +151,27 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
-# PANEL DEFINITION (tolerant strike detection)
+# PANEL DEFINITION (uses detected strike columns)
 # ---------------------------------------------------------------------
 
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
 
-    cols_lower = {c.lower(): c for c in df.columns}
-    ce_key = next((v for k, v in cols_lower.items() if "ce_strike" in k), None)
-    pe_key = next((v for k, v in cols_lower.items() if "pe_strike" in k), None)
+    # detect strike headers dynamically
+    strike_cols = get_strike_columns(df)
+    selected_col = st.selectbox(f"{name} — choose strike column", strike_cols, key=f"{key}_col")
 
-    if ce_key:
-        strikes = sorted(pd.to_numeric(df[ce_key], errors="coerce").dropna().unique())
-    elif pe_key:
-        strikes = sorted(pd.to_numeric(df[pe_key], errors="coerce").dropna().unique())
-    else:
-        st.warning("⚠️ No strike column found — check headers below:")
-        st.write(df.columns.tolist())
+    try:
+        strikes = sorted(pd.to_numeric(df[selected_col], errors="coerce").dropna().unique())
+    except Exception:
+        strikes = sorted(df[selected_col].dropna().unique())
+
+    if not len(strikes):
+        st.warning(f"No valid values in {selected_col}")
         return
 
-    strike = st.selectbox(f"{name} Strike", strikes, key=f"{key}_strike")
+    strike = st.selectbox(f"{name} — select strike value", strikes, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
 
     c1, c2, c3 = st.columns(3)
@@ -195,6 +184,7 @@ def panel(name, color=None):
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
+            "col": selected_col,
             "strike": strike,
             "opt_type": opt_type,
             "price_chart": price_chart,
@@ -204,7 +194,7 @@ def panel(name, color=None):
 
     s = st.session_state.get(f"{key}_plot")
     if s:
-        st.success(f"{s['opt_type']} | Strike {s['strike']}")
+        st.success(f"{s['opt_type']} | {s['strike']} (from {s['col']})")
         plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color)
         plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color)
@@ -216,5 +206,3 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
-
-
