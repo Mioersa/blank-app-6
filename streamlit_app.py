@@ -19,7 +19,7 @@ if not files:
     st.stop()
 
 def get_time_from_filename(name):
-    m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})", name)
+    m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
@@ -107,7 +107,6 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
-
     strike_list = []
     if "CE_strikePrice" in df.columns:
         strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
