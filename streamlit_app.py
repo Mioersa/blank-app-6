@@ -2,21 +2,29 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import re
+from io import StringIO
 
+# ---------------------------------------------------------------------
+# APP SETTINGS
+# ---------------------------------------------------------------------
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (No Hour‑Grouping, HHMM Labels)")
+st.title("📊 Options Data Viewer (Overlay · Cache · Download)")
 
-# ---------------- upload ----------------
+# ---------------------------------------------------------------------
+# FILE UPLOAD + CLEAR BUTTON
+# ---------------------------------------------------------------------
 if "uploaded_files" not in st.session_state:
     st.session_state["uploaded_files"] = None
-clear = st.button("🗑️ Clear uploaded files")
-if clear:
+
+if st.button("🗑️ Clear uploaded files"):
     st.session_state.clear()
     st.experimental_rerun()
 
 uploaded = st.file_uploader(
     "Upload multiple CSV files (_DDMMYYYY_HHMMSS.csv)",
-    type=["csv"], accept_multiple_files=True)
+    type=["csv"],
+    accept_multiple_files=True,
+)
 if uploaded:
     st.session_state["uploaded_files"] = uploaded
 
@@ -25,74 +33,141 @@ if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
+# ---------------------------------------------------------------------
+# HELPER: parse timestamp + HHMM label from filename
+# ---------------------------------------------------------------------
 def parse_filename(name):
-    m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
+    m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # ---- prefix T makes label categorical text
+    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # T-prefix label
 
-frames = []
-for f in files:
-    df = pd.read_csv(f)
-    ts, lbl = parse_filename(f.name)
-    df["timestamp"] = ts
-    df["time_label"] = lbl
-    frames.append(df)
+# ---------------------------------------------------------------------
+# READ + COMBINE FILES (CACHED)
+# ---------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def load_combined(files):
+    frames = []
+    for f in files:
+        try:
+            df = pd.read_csv(f)
+            if df.empty:
+                continue
+        except Exception as e:
+            st.warning(f"⚠️ Could not read {f.name}: {e}")
+            continue
 
-df = pd.concat(frames)
-df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+        ts, lbl = parse_filename(f.name)
+        df["timestamp"] = ts
+        df["time_label"] = lbl
+        frames.append(df)
 
-# ---------------- deltas ----------------
-for pre in ["CE_", "PE_"]:
-    vol, oi, strike = f"{pre}totalTradedVolume", f"{pre}openInterest", f"{pre}strikePrice"
-    if not all(c in df.columns for c in [vol, oi, strike]): 
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames)
+    out = (
+        out.dropna(subset=["timestamp"])
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    out.columns = [c.strip().replace(" ", "_") for c in out.columns]
+    return out
+
+df = load_combined(files)
+if df.empty:
+    st.error("❌ All uploaded files empty or invalid")
+    st.stop()
+
+# ---------------------------------------------------------------------
+# COMPUTE ΔVOLUME AND ΔOI PER STRIKE
+# ---------------------------------------------------------------------
+for prefix in ["CE_", "PE_"]:
+    vol, oi, strike = f"{prefix}totalTradedVolume", f"{prefix}openInterest", f"{prefix}strikePrice"
+    if not all(c in df.columns for c in [vol, oi, strike]):
         continue
+
     def add_delta(g):
         g = g.sort_values("timestamp")
-        g[f"{pre}volChange"] = g[vol].diff().fillna(0)
-        g[f"{pre}oiChange"] = g[oi].diff().fillna(0)
+        g[f"{prefix}volChange"] = g[vol].diff().fillna(0)
+        g[f"{prefix}oiChange"] = g[oi].diff().fillna(0)
         return g
+
     df = df.groupby(strike, group_keys=False).apply(add_delta)
 
-# ---------------- plot helper ----------------
-def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
-    prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
+# ---------------------------------------------------------------------
+# PLOT HELPER
+# ---------------------------------------------------------------------
+def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None, overlay=False):
+    prefixes = ["CE_", "PE_"] if (opt_type == "Both" or overlay) else [f"{opt_type}_"]
+    figs = []
+    df_out = pd.DataFrame()
+
     for pre in prefixes:
         col, s_col = f"{pre}{metric}", f"{pre}strikePrice"
-        if col not in df.columns or s_col not in df.columns: 
+        if col not in df.columns or s_col not in df.columns:
             continue
+
         tmp = df[df[s_col] == strike].copy().sort_values("timestamp")
+        if tmp.empty:
+            continue
+
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
         tmp["time_label"] = tmp["time_label"].astype(str)
+        tmp["Type"] = pre[:-1]
 
-        fig_func = px.line if chart_type == "Line" else px.bar
-        args = dict(x="time_label", y=col, title=f"{pre}{label}")
-        if chart_type == "Line": args["markers"] = True
-        fig = fig_func(tmp, **args)
+        df_out = pd.concat([df_out, tmp[["time_label", col, "Type"]]])
+
+    # plot overlay if multiple types
+    if not df_out.empty:
+        if chart_type == "Line":
+            fig = px.line(
+                df_out,
+                x="time_label",
+                y=col,
+                color="Type",
+                title=f"{label} (Overlay)" if overlay else f"{label}",
+                markers=True,
+            )
+        else:
+            fig = px.bar(
+                df_out,
+                x="time_label",
+                y=col,
+                color="Type",
+                barmode="group",
+                title=f"{label} (Overlay)" if overlay else f"{label}",
+            )
+
         if color:
-            if chart_type == "Line": fig.update_traces(line_color=color, marker_color=color)
-            else: fig.update_traces(marker_color=color)
+            fig.update_traces(marker_color=color)
 
         fig.update_layout(
             height=400,
             xaxis=dict(
-                type="category",                # <--- treat x purely as category
+                type="category",
                 categoryorder="array",
-                categoryarray=list(tmp["time_label"]),  # keep original order
+                categoryarray=list(df_out["time_label"].unique()),
                 tickangle=-45,
-                tickfont=dict(size=10)
+                tickfont=dict(size=10),
             ),
             xaxis_title="Time (HHMM)",
             yaxis_title=label,
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------------- panel ----------------
+    return df_out.reset_index(drop=True)
+
+# ---------------------------------------------------------------------
+# PANEL DEFINITION
+# ---------------------------------------------------------------------
 def panel(name, color=None):
+    """UI + charts for one independent panel."""
     st.subheader(name)
     key = name.replace(" ", "_")
+
+    # strike selection
     if "CE_strikePrice" in df.columns:
         strikes = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
     elif "PE_strikePrice" in df.columns:
@@ -103,6 +178,7 @@ def panel(name, color=None):
 
     strike = st.selectbox(f"{name} Strike", strikes, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
+    overlay = st.checkbox("Overlay CE vs PE on same chart", key=f"{key}_overlay")
 
     c1, c2, c3 = st.columns(3)
     with c1: price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
@@ -111,20 +187,30 @@ def panel(name, color=None):
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
-            "strike": strike, "opt_type": opt_type,
-            "price_chart": price_chart, "vol_chart": vol_chart, "oi_chart": oi_chart
+            "strike": strike,
+            "opt_type": opt_type,
+            "price_chart": price_chart,
+            "vol_chart": vol_chart,
+            "oi_chart": oi_chart,
+            "overlay": overlay,
         }
 
     s = st.session_state.get(f"{key}_plot")
     if s:
         st.success(f"{s['opt_type']} | Strike {s['strike']}")
-        plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color)
-        plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color)
-        plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color)
+        data_all = []
+        data_all.append(plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color, s["overlay"]))
+        data_all.append(plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color, s["overlay"]))
+        data_all.append(plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color, s["overlay"]))
 
-# ---------------- layout ----------------
+        all_data = pd.concat(data_all).reset_index(drop=True)
+        if not all_data.empty:
+            csv_data = all_data.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 Download Chart Data", csv_data, file_name=f"{key}_plots.csv", mime="text/csv")
+
+# ---------------------------------------------------------------------
+# LAYOUT: PANEL A (default), PANEL B (green)
+# ---------------------------------------------------------------------
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
-
-
