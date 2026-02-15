@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (All X‑Labels + Δ per Strike)")
+st.title("📊 Options Data Viewer (Auto Strike Detection + All X‑Labels)")
 
 # -----------------------------------------
 # Upload CSVs
@@ -26,7 +26,7 @@ def get_time_from_filename(name):
     return f"{d}-{mo}-{y} {h}:{mi}:{s}"
 
 # -----------------------------------------
-# Combine uploaded CSVs
+# Combine all uploaded data
 # -----------------------------------------
 frames = []
 for f in files:
@@ -39,12 +39,28 @@ df.dropna(subset=["timestamp"], inplace=True)
 df = df.sort_values("timestamp").reset_index(drop=True)
 
 # -----------------------------------------
-# Compute per‑strike ΔVolume and ΔOI
+# Identify strike columns dynamically
+# -----------------------------------------
+possible_cols = [c for c in df.columns if "strike" in c.lower()]
+if not possible_cols:
+    st.error("❌ No strike price column found in uploaded files.")
+    st.stop()
+
+# pick likely CE/PE versions
+ce_col = next((c for c in possible_cols if "ce" in c.lower()), possible_cols[0])
+pe_col = next((c for c in possible_cols if "pe" in c.lower()), possible_cols[0])
+
+# standardize names
+df.rename(columns={ce_col: "CE_strikePrice", pe_col: "PE_strikePrice"}, inplace=True, errors="ignore")
+
+# -----------------------------------------
+# Compute per‑strike ΔVolume & ΔOI
 # -----------------------------------------
 for prefix in ["CE_", "PE_"]:
     vol_col = f"{prefix}totalTradedVolume"
     oi_col = f"{prefix}openInterest"
-    if vol_col not in df.columns or oi_col not in df.columns:
+    strike_col = f"{prefix}strikePrice"
+    if vol_col not in df.columns or oi_col not in df.columns or strike_col not in df.columns:
         continue
 
     def add_deltas(group):
@@ -53,7 +69,25 @@ for prefix in ["CE_", "PE_"]:
         group[f"{prefix}oiChange"] = group[oi_col].diff().fillna(0)
         return group
 
-    df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(add_deltas)
+    df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
+
+# -----------------------------------------
+# Helper to get unique strikes for dropdown
+# -----------------------------------------
+def get_unique_strikes(df):
+    cols = [c for c in df.columns if "strikePrice" in c]
+    strikes = set()
+    for c in cols:
+        try:
+            strikes |= set(pd.to_numeric(df[c], errors="coerce").dropna().unique())
+        except Exception:
+            pass
+    return sorted(strikes)
+
+strike_list = get_unique_strikes(df)
+if not strike_list:
+    st.error("❌ No strike values detected in the data.")
+    st.stop()
 
 # -----------------------------------------
 # Plot helper (show all x‑labels)
@@ -69,16 +103,19 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         col = f"{pre}{metric}"
         if col not in df.columns:
             continue
-        tmp = df[df[f"{pre}strikePrice"] == strike].copy()
+        s_col = f"{pre}strikePrice"
+        tmp = df[df[s_col] == strike].copy()
         tmp["time"] = pd.to_datetime(tmp["timestamp"], format="%d-%m-%Y %H:%M:%S")
         tmp = tmp.sort_values("time")
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
 
         x_vals = tmp["time"].tolist()
+        if not len(tmp):
+            st.warning(f"No data for strike {strike} in {pre}.")
+            continue
 
         fig_func = px.line if chart_type == "Line" else px.bar
         fig = fig_func(tmp, x="time", y=col, title=f"{pre}{label}", markers=True)
-
         if color:
             if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
@@ -108,7 +145,9 @@ def panel(name, color=None):
     key = name.replace(" ", "_")
 
     strike = st.selectbox(
-        f"{name} Strike", sorted(df["CE_strikePrice"].unique()), key=f"{key}_strike"
+        f"{name} Strike",
+        strike_list,
+        key=f"{key}_strike"
     )
     opt_type = st.radio(
         "Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True
