@@ -4,15 +4,34 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (HHMM labels, stable Line/Bar)")
+st.title("📊 Options Data Viewer (HHMM labels, Clear Uploads, Stable Line/Bar)")
 
-# ------------------- upload -------------------
-files = st.file_uploader(
+# ------------------- file upload -------------------
+if "uploaded_files" not in st.session_state:
+    st.session_state["uploaded_files"] = None
+
+clear = st.button("🗑️ Clear uploaded files")
+if clear:
+    st.session_state["uploaded_files"] = None
+    st.session_state.clear()
+    st.experimental_rerun()
+
+uploaded = st.file_uploader(
     "Upload multiple CSV files (_DDMMYYYY_HHMMSS.csv)",
-    type=["csv"], accept_multiple_files=True)
-if not files:
-    st.info("👆 Upload csvs to start"); st.stop()
+    type=["csv"], accept_multiple_files=True,
+    key="file_uploader"
+)
 
+# store new uploads
+if uploaded:
+    st.session_state["uploaded_files"] = uploaded
+
+files = st.session_state.get("uploaded_files", [])
+if not files:
+    st.info("👆 Upload option‑chain CSVs to start")
+    st.stop()
+
+# ------------------- helper -------------------
 def parse_filename(name):
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m: return None, None
@@ -28,9 +47,9 @@ for f in files:
 
 df=pd.concat(frames)
 df=df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-df.columns=[c.strip().replace(" ","_") for c in df.columns]   # clean odd spaces
+df.columns=[c.strip().replace(" ","_") for c in df.columns]
 
-# ------------------- deltas -------------------
+# ------------------- per‑strike deltas -------------------
 for prefix in ["CE_","PE_"]:
     vol=f"{prefix}totalTradedVolume"; oi=f"{prefix}openInterest"; strike=f"{prefix}strikePrice"
     if not all(c in df.columns for c in [vol,oi,strike]): continue
@@ -41,7 +60,7 @@ for prefix in ["CE_","PE_"]:
         return g
     df=df.groupby(strike,group_keys=False).apply(add_delta)
 
-# ------------------- plot helper -------------------
+# ------------------- plotting helper -------------------
 def plot_metric(metric,label,df,strike,opt_type,chart_type,color=None):
     prefixes=["CE_","PE_"] if opt_type=="Both" else [f"{opt_type}_"]
     for pre in prefixes:
@@ -67,22 +86,23 @@ def plot_metric(metric,label,df,strike,opt_type,chart_type,color=None):
                 tickvals=list(tmp["time_label"]),
                 ticktext=list(tmp["time_label"]),
                 tickangle=-45,tickfont=dict(size=10)),
-            xaxis_title="Time (HHMM)", yaxis_title=label)
+            xaxis_title="Time (HHMM)",yaxis_title=label)
         st.plotly_chart(fig,use_container_width=True)
 
-# ------------------- panel -------------------
+# ------------------- panel function -------------------
 def panel(name,color=None):
-    st.subheader(name); key=name.replace(" ","_")
+    st.subheader(name)
+    key=name.replace(" ","_")
     if "CE_strikePrice" in df.columns:
         strikes=sorted(pd.to_numeric(df["CE_strikePrice"],errors="coerce").dropna().unique())
     elif "PE_strikePrice" in df.columns:
         strikes=sorted(pd.to_numeric(df["PE_strikePrice"],errors="coerce").dropna().unique())
     else:
-        st.warning("no strike col"); return
+        st.warning("No strike column found."); return
 
     strike=st.selectbox(f"{name} Strike",strikes,key=f"{key}_strike")
     opt_type=st.radio("Option Type",["CE","PE","Both"],key=f"{key}_type",horizontal=True)
-    st.markdown("**Chart Type per metric**")
+    st.markdown("**Chart Type per metric:**")
     c1,c2,c3=st.columns(3)
     with c1: price_chart=st.radio("Price",["Line","Bar"],key=f"{key}_p",horizontal=True)
     with c2: vol_chart=st.radio("ΔVolume",["Line","Bar"],key=f"{key}_v",horizontal=True)
