@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Stable ΔVolume + ΔOI per Strike)")
+st.title("📊 Options Data Viewer (ΔVolume + ΔOI per Strike | Filename Time Labels)")
 
 # -----------------------------------------
 # Upload CSVs
@@ -19,11 +19,14 @@ if not files:
     st.stop()
 
 def get_time_from_filename(name):
+    """Extract readable timestamp and HHMM label from filename"""
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
-        return None
+        return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}"
+    ts = f"{d}-{mo}-{y} {h}:{mi}:{s}"
+    short = f"{h}{mi}"  # HHMM label to show on x-axis
+    return ts, short
 
 # -----------------------------------------
 # Combine uploaded CSVs
@@ -31,7 +34,9 @@ def get_time_from_filename(name):
 frames = []
 for f in files:
     df = pd.read_csv(f)
-    df["timestamp"] = get_time_from_filename(f.name)
+    full_ts, short_label = get_time_from_filename(f.name)
+    df["timestamp"] = full_ts
+    df["time_label"] = short_label  # new column for concise x-axis
     frames.append(df)
 
 df = pd.concat(frames)
@@ -44,7 +49,8 @@ df = df.sort_values("timestamp").reset_index(drop=True)
 for prefix in ["CE_", "PE_"]:
     vol_col = f"{prefix}totalTradedVolume"
     oi_col = f"{prefix}openInterest"
-    if vol_col not in df.columns or oi_col not in df.columns:
+    strike_col = f"{prefix}strikePrice"
+    if vol_col not in df.columns or oi_col not in df.columns or strike_col not in df.columns:
         continue
 
     def add_deltas(group):
@@ -53,10 +59,10 @@ for prefix in ["CE_", "PE_"]:
         group[f"{prefix}oiChange"] = group[oi_col].diff().fillna(0)
         return group
 
-    df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(add_deltas)
+    df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper (robust for bar charts)
+# Plot helper (x‑labels from filename)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = []
@@ -67,33 +73,37 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
 
     for pre in prefixes:
         col = f"{pre}{metric}"
-        if col not in df.columns:
+        s_col = f"{pre}strikePrice"
+        if col not in df.columns or s_col not in df.columns:
             continue
-        tmp = df[df[f"{pre}strikePrice"] == strike].copy()
-        tmp["time"] = pd.to_datetime(tmp["timestamp"], format="%d-%m-%Y %H:%M:%S")
-        tmp = tmp.sort_values("time")
 
-        # ensure numeric values for bar charts
+        tmp = df[df[s_col] == strike].copy()
+        tmp = tmp.sort_values("timestamp")
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
 
-        if chart_type == "Line":
-            fig = px.line(tmp, x="time", y=col, title=f"{pre}{label}", markers=True)
-            if color:
+        # Every timestamp gets its HHMM label
+        x_labels = tmp["time_label"].tolist()
+
+        fig_func = px.line if chart_type == "Line" else px.bar
+        fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+
+        if color:
+            if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
-        else:
-            fig = px.bar(tmp, x="time", y=col, title=f"{pre}{label}")
-            if color:
+            else:
                 fig.update_traces(marker_color=color)
 
         fig.update_layout(
             height=400,
             xaxis=dict(
-                tickmode="linear",
-                tickvals=tmp["time"],
+                tickmode="array",
+                tickvals=x_labels,
+                ticktext=x_labels,
+                ticks="outside",
                 tickangle=-45,
-                tickfont=dict(size=9),
+                tickfont=dict(size=10),
             ),
-            xaxis_title="Time",
+            xaxis_title="Time (HHMM)",
             yaxis_title=label,
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -105,27 +115,27 @@ def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
 
-    strike = st.selectbox(
-        f"{name} Strike", sorted(df["CE_strikePrice"].unique()), key=f"{key}_strike"
-    )
-    opt_type = st.radio(
-        "Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True
-    )
+    # ensure numeric strike list
+    if "CE_strikePrice" in df.columns:
+        strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
+    else:
+        strike_list = []
+
+    if not strike_list:
+        st.warning("No valid strike prices found.")
+        return
+
+    strike = st.selectbox(f"{name} Strike", strike_list, key=f"{key}_strike")
+    opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
 
     st.markdown("**Chart Types** (choose per metric):")
     c1, c2, c3 = st.columns(3)
     with c1:
-        price_chart = st.radio(
-            "Price", ["Line", "Bar"], key=f"{key}_price", horizontal=True
-        )
+        price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_price", horizontal=True)
     with c2:
-        vol_chart = st.radio(
-            "ΔVolume", ["Line", "Bar"], key=f"{key}_vol", horizontal=True
-        )
+        vol_chart = st.radio("ΔVolume", ["Line", "Bar"], key=f"{key}_vol", horizontal=True)
     with c3:
-        oi_chart = st.radio(
-            "ΔOI (per strike)", ["Line", "Bar"], key=f"{key}_oi", horizontal=True
-        )
+        oi_chart = st.radio("ΔOI (per strike)", ["Line", "Bar"], key=f"{key}_oi", horizontal=True)
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
@@ -139,21 +149,12 @@ def panel(name, color=None):
     saved = st.session_state.get(f"{key}_plot", None)
     if saved:
         st.success(f"Strike {saved['strike']} | {saved['opt_type']}")
-        plot_metric(
-            "lastPrice", "Price", df,
-            saved["strike"], saved["opt_type"], saved["price_chart"], color
-        )
-        plot_metric(
-            "volChange", "ΔVolume", df,
-            saved["strike"], saved["opt_type"], saved["vol_chart"], color
-        )
-        plot_metric(
-            "oiChange", "ΔOI (per strike)", df,
-            saved["strike"], saved["opt_type"], saved["oi_chart"], color
-        )
+        plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
+        plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
+        plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
 
 # -----------------------------------------
-# Layout: Panel A then B (green)
+# Layout: Panel A then B (green)
 # -----------------------------------------
 panel("Panel A")
 st.markdown("---")
