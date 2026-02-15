@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (HHMM Overlay, CSV Download, Safe Upload)")
+st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
 
 # -----------------------------------------
 # Upload CSVs + Clear option
@@ -45,29 +45,15 @@ def get_time_from_filename(name):
     return full, short
 
 # -----------------------------------------
-# Combine uploaded CSVs (safe read)
+# Combine uploaded CSVs
 # -----------------------------------------
 frames = []
 for f in files:
-    try:
-        if getattr(f, "size", None) == 0:
-            st.warning(f"⚠️ {f.name} is empty — skipped.")
-            continue
-        df = pd.read_csv(f)
-        if df.empty:
-            st.warning(f"⚠️ {f.name} has no rows — skipped.")
-            continue
-        full, short = get_time_from_filename(f.name)
-        df["timestamp"] = full
-        df["time_label"] = short
-        frames.append(df)
-    except Exception as e:
-        st.error(f"❌ Could not read {f.name}: {e}")
-        continue
-
-if not frames:
-    st.error("No valid CSVs loaded.")
-    st.stop()
+    df = pd.read_csv(f)
+    full, short = get_time_from_filename(f.name)
+    df["timestamp"] = full
+    df["time_label"] = short
+    frames.append(df)
 
 df = pd.concat(frames)
 df.dropna(subset=["timestamp"], inplace=True)
@@ -92,67 +78,45 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper (overlay CE vs PE)
+# Plot helper
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
-
-    data_list = []
     for pre in prefixes:
         col = f"{pre}{metric}"
         strike_col = f"{pre}strikePrice"
         if col not in df.columns or strike_col not in df.columns:
             continue
+
         tmp = df[df[strike_col] == strike].copy()
         tmp = tmp.sort_values("timestamp")
         if tmp.empty:
             continue
+
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
         tmp["time_label"] = tmp["time_label"].astype(str)
-        tmp["OptionType"] = pre.strip("_").split("_")[0]
-        tmp.rename(columns={col: label}, inplace=True)
-        data_list.append(tmp[["time_label", label, "OptionType"]])
 
-    if not data_list:
-        return
+        fig_func = px.line if chart_type == "Line" else px.bar
+        fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+        if color:
+            if chart_type == "Line":
+                fig.update_traces(line_color=color, marker_color=color)
+            else:
+                fig.update_traces(marker_color=color)
 
-    data = pd.concat(data_list)
-
-    if chart_type == "Line":
-        fig = px.line(
-            data,
-            x="time_label",
-            y=label,
-            color="OptionType",
-            title=f"{label} (Strike {strike})",
-            markers=True,
+        fig.update_layout(
+            height=400,
+            xaxis_title="Time (HHMM)",
+            yaxis_title=label,
+            xaxis=dict(
+                tickmode="array",
+                tickvals=list(tmp["time_label"]),
+                ticktext=list(tmp["time_label"]),
+                tickangle=-45,
+                tickfont=dict(size=10),
+            ),
         )
-    else:
-        fig = px.bar(
-            data,
-            x="time_label",
-            y=label,
-            color="OptionType",
-            barmode="group",
-            title=f"{label} (Strike {strike})",
-        )
-
-    if color:
-        fig.update_traces(marker_color=color)
-
-    fig.update_layout(
-        height=400,
-        xaxis_title="Time (HHMM)",
-        yaxis_title=label,
-        xaxis=dict(
-            tickmode="array",
-            tickvals=list(data["time_label"].unique()),
-            ticktext=list(data["time_label"].unique()),
-            tickangle=-45,
-            tickfont=dict(size=10),
-        ),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------------------
 # Panel definition
@@ -188,7 +152,7 @@ def panel(name, color=None):
             "opt_type": opt_type,
             "price_chart": price_chart,
             "vol_chart": vol_chart,
-            "oi_chart": oi_chart,
+            "oi_chart": oi_chart
         }
 
     saved = st.session_state.get(f"{key}_plot", None)
@@ -196,7 +160,7 @@ def panel(name, color=None):
         st.success(f"{saved['opt_type']} | Strike {saved['strike']}")
 
         # ------------------------------------------------
-        # Download chart data (merged CE+PE if Both)
+        # New: Download chart data (CSV)
         prefixes = ["CE_", "PE_"] if saved["opt_type"] == "Both" else [f"{saved['opt_type']}_"]
         export_frames = []
         for pre in prefixes:
@@ -205,7 +169,6 @@ def panel(name, color=None):
                 continue
             sub = df[df[strike_col] == saved["strike"]].copy()
             sub = sub.sort_values("timestamp")
-            sub["OptionType"] = pre.strip("_")
             export_frames.append(sub)
         if export_frames:
             export_df = pd.concat(export_frames)
