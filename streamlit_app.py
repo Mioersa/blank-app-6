@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (ΔVolume + ΔOI per Strike)")
+st.title("📊 Options Data Viewer (Per‑Metric Chart Type + Δ per Strike)")
 
 # -----------------------------------------
 # Upload CSVs
@@ -15,7 +15,7 @@ files = st.file_uploader(
     accept_multiple_files=True,
 )
 if not files:
-    st.info("👆 Upload option-chain CSVs to start")
+    st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
 def get_time_from_filename(name):
@@ -39,7 +39,7 @@ df.dropna(subset=["timestamp"], inplace=True)
 df = df.sort_values("timestamp").reset_index(drop=True)
 
 # -----------------------------------------
-# Compute per‑strike ΔVolume and ΔOI
+# Compute per‑strike ΔVolume and ΔOIΔ
 # -----------------------------------------
 for prefix in ["CE_", "PE_"]:
     vol_col = f"{prefix}totalTradedVolume"
@@ -49,17 +49,18 @@ for prefix in ["CE_", "PE_"]:
 
     def add_deltas(group):
         group = group.sort_values("timestamp")
-        # Δ relative to previous timestamp of same strike
+        # volume Δ for current minus previous timestamp of same strike
         group[f"{prefix}volChange"] = group[vol_col].diff().fillna(0)
+        # OI per strike Δ like volume Δ
         group[f"{prefix}oiChange"] = group[oi_col].diff().fillna(0)
-        # Δ of Δ = change in ΔOI relative to prior file (same strike)
+        # secondary Δ (Δ of ΔOI) if needed
         group[f"{prefix}oiDeltaDelta"] = group[f"{prefix}oiChange"].diff().fillna(0)
         return group
 
     df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Helper function for plotting
+# Plot helper
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = []
@@ -84,7 +85,6 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             else:
                 fig.update_traces(marker_color=color)
         fig.update_layout(
-            autosize=True,
             height=400,
             xaxis=dict(
                 tickmode="linear",
@@ -98,36 +98,77 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------------------
-# Panel setup (persistent via session_state)
+# Panel definition (persistent)
 # -----------------------------------------
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
 
     strike = st.selectbox(
-        f"{name} Strike",
-        sorted(df["CE_strikePrice"].unique()),
-        key=f"{key}_strike",
+        f"{name} Strike", sorted(df["CE_strikePrice"].unique()), key=f"{key}_strike"
     )
-    opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type")
-    chart_type = st.radio("Chart Type", ["Line", "Bar"], key=f"{key}_chart")
+    opt_type = st.radio(
+        "Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True
+    )
+
+    # Per‑metric chart type pickers
+    st.markdown("**Chart Types:**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        price_chart = st.radio(
+            "Price", ["Line", "Bar"], key=f"{key}_price_chart", horizontal=True
+        )
+    with c2:
+        vol_chart = st.radio(
+            "ΔVolume", ["Line", "Bar"], key=f"{key}_vol_chart", horizontal=True
+        )
+    with c3:
+        oi_chart = st.radio(
+            "ΔOI (per strike)", ["Line", "Bar"], key=f"{key}_oi_chart", horizontal=True
+        )
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
             "strike": strike,
             "opt_type": opt_type,
-            "chart_type": chart_type,
+            "price_chart": price_chart,
+            "vol_chart": vol_chart,
+            "oi_chart": oi_chart,
         }
 
     saved = st.session_state.get(f"{key}_plot", None)
     if saved:
         st.success(f"Strike {saved['strike']} | {saved['opt_type']}")
-        plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
-        plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
-        plot_metric("oiDeltaDelta", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["chart_type"], color)
+        plot_metric(
+            "lastPrice",
+            "Price",
+            df,
+            saved["strike"],
+            saved["opt_type"],
+            saved["price_chart"],
+            color,
+        )
+        plot_metric(
+            "volChange",
+            "ΔVolume",
+            df,
+            saved["strike"],
+            saved["opt_type"],
+            saved["vol_chart"],
+            color,
+        )
+        plot_metric(
+            "oiChange",
+            "ΔOI (per strike)",
+            df,
+            saved["strike"],
+            saved["opt_type"],
+            saved["oi_chart"],
+            color,
+        )
 
 # -----------------------------------------
-# Layout: Panel A followed by Panel B (green)
+# Layout: Panel A then Panel B (green)
 # -----------------------------------------
 panel("Panel A")
 st.markdown("---")
