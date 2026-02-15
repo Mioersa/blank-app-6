@@ -8,7 +8,7 @@ import re
 # ---------------------------------------------------------------------
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Auto-Strike Detection · Dual Panels)")
+st.title("📊 Options Data Viewer (Auto Strike From First File · Dual Panels)")
 
 # ---------------------------------------------------------------------
 # FILE UPLOAD + CLEAR BUTTON
@@ -35,6 +35,37 @@ if not files:
     st.stop()
 
 # ---------------------------------------------------------------------
+# STRIKE COLUMN DETECTION - from first file only
+# ---------------------------------------------------------------------
+
+first_file = files[0]
+try:
+    temp_df = pd.read_csv(first_file)
+    temp_df.columns = [c.strip().replace(" ", "_") for c in temp_df.columns]
+    strike_cols = [c for c in temp_df.columns if re.search("strike", c, re.IGNORECASE)]
+except Exception as e:
+    st.error(f"⚠️ Error reading first file: {e}")
+    st.stop()
+
+if not strike_cols:
+    st.error("❌ No column with 'strike' in name found in the first file.")
+    st.write("Detected columns:", temp_df.columns.tolist())
+    st.stop()
+
+strike_col = strike_cols[0]
+try:
+    strike_values = sorted(pd.to_numeric(temp_df[strike_col], errors="coerce").dropna().unique())
+except Exception:
+    strike_values = sorted(temp_df[strike_col].dropna().unique())
+
+if not len(strike_values):
+    st.error(f"No valid values in `{strike_col}`.")
+    st.stop()
+
+selected_strike = st.selectbox(f"Select strike value from `{strike_col}` of first file", strike_values)
+st.markdown("---")
+
+# ---------------------------------------------------------------------
 # HELPER: parse timestamp + HHMM label from filename
 # ---------------------------------------------------------------------
 
@@ -43,7 +74,7 @@ def parse_filename(name):
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # prefix T ➜ categorical label
+    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # prefix T ➜ label
 
 # ---------------------------------------------------------------------
 # READ + COMBINE FILES
@@ -91,25 +122,10 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike, group_keys=False).apply(add_delta)
 
 # ---------------------------------------------------------------------
-# STRIKE COLUMN FINDER
-# ---------------------------------------------------------------------
-
-def get_strike_columns(dataframe):
-    """Return all column names containing 'strike' (case-insensitive)."""
-    return [col for col in dataframe.columns if re.search("strike", col, re.IGNORECASE)]
-
-strike_cols = get_strike_columns(df)
-if not strike_cols:
-    st.error("⚠️ No column containing 'strike' found.")
-    st.write("Detected columns:", df.columns.tolist())
-    st.stop()
-
-# ---------------------------------------------------------------------
 # PLOT HELPER
 # ---------------------------------------------------------------------
 
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
-    """Draw a Plotly chart for the given metric."""
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
 
     for pre in prefixes:
@@ -151,27 +167,13 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
-# PANEL DEFINITION (uses detected strike columns)
+# PANEL DEFINITION (uses selected_strike)
 # ---------------------------------------------------------------------
 
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
 
-    # detect strike headers dynamically
-    strike_cols = get_strike_columns(df)
-    selected_col = st.selectbox(f"{name} — choose strike column", strike_cols, key=f"{key}_col")
-
-    try:
-        strikes = sorted(pd.to_numeric(df[selected_col], errors="coerce").dropna().unique())
-    except Exception:
-        strikes = sorted(df[selected_col].dropna().unique())
-
-    if not len(strikes):
-        st.warning(f"No valid values in {selected_col}")
-        return
-
-    strike = st.selectbox(f"{name} — select strike value", strikes, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
 
     c1, c2, c3 = st.columns(3)
@@ -184,8 +186,7 @@ def panel(name, color=None):
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
-            "col": selected_col,
-            "strike": strike,
+            "strike": selected_strike,
             "opt_type": opt_type,
             "price_chart": price_chart,
             "vol_chart": vol_chart,
@@ -194,7 +195,7 @@ def panel(name, color=None):
 
     s = st.session_state.get(f"{key}_plot")
     if s:
-        st.success(f"{s['opt_type']} | {s['strike']} (from {s['col']})")
+        st.success(f"{s['opt_type']} | Strike {s['strike']}")
         plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color)
         plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color)
@@ -206,3 +207,5 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
+
+
