@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (HHMM Overlay, CSV Download)")
+st.title("📊 Options Data Viewer (HHMM Overlay, CSV Download, Safe Upload)")
 
 # -----------------------------------------
 # Upload CSVs + Clear option
@@ -45,15 +45,29 @@ def get_time_from_filename(name):
     return full, short
 
 # -----------------------------------------
-# Combine uploaded CSVs
+# Combine uploaded CSVs (safe read)
 # -----------------------------------------
 frames = []
 for f in files:
-    df = pd.read_csv(f)
-    full, short = get_time_from_filename(f.name)
-    df["timestamp"] = full
-    df["time_label"] = short
-    frames.append(df)
+    try:
+        if getattr(f, "size", None) == 0:
+            st.warning(f"⚠️ {f.name} is empty — skipped.")
+            continue
+        df = pd.read_csv(f)
+        if df.empty:
+            st.warning(f"⚠️ {f.name} has no rows — skipped.")
+            continue
+        full, short = get_time_from_filename(f.name)
+        df["timestamp"] = full
+        df["time_label"] = short
+        frames.append(df)
+    except Exception as e:
+        st.error(f"❌ Could not read {f.name}: {e}")
+        continue
+
+if not frames:
+    st.error("No valid CSVs loaded.")
+    st.stop()
 
 df = pd.concat(frames)
 df.dropna(subset=["timestamp"], inplace=True)
@@ -78,7 +92,7 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper (now can overlay CE vs PE)
+# Plot helper (overlay CE vs PE)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -105,11 +119,23 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     data = pd.concat(data_list)
 
     if chart_type == "Line":
-        fig = px.line(data, x="time_label", y=label, color="OptionType",
-                      title=f"{label} (Strike {strike})", markers=True)
+        fig = px.line(
+            data,
+            x="time_label",
+            y=label,
+            color="OptionType",
+            title=f"{label} (Strike {strike})",
+            markers=True,
+        )
     else:
-        fig = px.bar(data, x="time_label", y=label, color="OptionType",
-                     barmode="group", title=f"{label} (Strike {strike})")
+        fig = px.bar(
+            data,
+            x="time_label",
+            y=label,
+            color="OptionType",
+            barmode="group",
+            title=f"{label} (Strike {strike})",
+        )
 
     if color:
         fig.update_traces(marker_color=color)
@@ -162,7 +188,7 @@ def panel(name, color=None):
             "opt_type": opt_type,
             "price_chart": price_chart,
             "vol_chart": vol_chart,
-            "oi_chart": oi_chart
+            "oi_chart": oi_chart,
         }
 
     saved = st.session_state.get(f"{key}_plot", None)
