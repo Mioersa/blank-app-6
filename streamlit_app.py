@@ -4,15 +4,15 @@ import plotly.express as px
 import re
 from io import StringIO
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
 # APP SETTINGS
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Overlay · Cache · Download)")
+st.title("📊 Options Data Viewer (HHMM Labels · Overlay · Dual Panels · CSV Export)")
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
 # FILE UPLOAD + CLEAR BUTTON
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
 if "uploaded_files" not in st.session_state:
     st.session_state["uploaded_files"] = None
 
@@ -33,56 +33,46 @@ if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
-# ---------------------------------------------------------------------
-# HELPER: parse timestamp + HHMM label from filename
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
+# HELPER: parse timestamp + HHMM label
+# ---------------------------------------------------------------
 def parse_filename(name):
     m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})", name)
-    if not m:
+    if not m: 
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # T-prefix label
+    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"
 
-# ---------------------------------------------------------------------
-# READ + COMBINE FILES (CACHED)
-# ---------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def load_combined(files):
-    frames = []
-    for f in files:
-        try:
-            df = pd.read_csv(f)
-            if df.empty:
-                continue
-        except Exception as e:
-            st.warning(f"⚠️ Could not read {f.name}: {e}")
+# ---------------------------------------------------------------
+# READ + COMBINE FILES
+# ---------------------------------------------------------------
+frames = []
+for f in files:
+    try:
+        df = pd.read_csv(f)
+        if df.empty:
+            st.warning(f"⚠️ Skipped empty file: {f.name}")
             continue
+    except Exception as e:
+        st.warning(f"⚠️ Could not read {f.name}: {e}")
+        continue
 
-        ts, lbl = parse_filename(f.name)
-        df["timestamp"] = ts
-        df["time_label"] = lbl
-        frames.append(df)
+    ts, lbl = parse_filename(f.name)
+    df["timestamp"] = ts
+    df["time_label"] = lbl
+    frames.append(df)
 
-    if not frames:
-        return pd.DataFrame()
-
-    out = pd.concat(frames)
-    out = (
-        out.dropna(subset=["timestamp"])
-        .sort_values("timestamp")
-        .reset_index(drop=True)
-    )
-    out.columns = [c.strip().replace(" ", "_") for c in out.columns]
-    return out
-
-df = load_combined(files)
-if df.empty:
+if not frames:
     st.error("❌ All uploaded files empty or invalid")
     st.stop()
 
-# ---------------------------------------------------------------------
+df = pd.concat(frames)
+df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+
+# ---------------------------------------------------------------
 # COMPUTE ΔVOLUME AND ΔOI PER STRIKE
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
 for prefix in ["CE_", "PE_"]:
     vol, oi, strike = f"{prefix}totalTradedVolume", f"{prefix}openInterest", f"{prefix}strikePrice"
     if not all(c in df.columns for c in [vol, oi, strike]):
@@ -96,13 +86,12 @@ for prefix in ["CE_", "PE_"]:
 
     df = df.groupby(strike, group_keys=False).apply(add_delta)
 
-# ---------------------------------------------------------------------
-# PLOT HELPER
-# ---------------------------------------------------------------------
-def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None, overlay=False):
-    prefixes = ["CE_", "PE_"] if (opt_type == "Both" or overlay) else [f"{opt_type}_"]
-    figs = []
-    df_out = pd.DataFrame()
+# ---------------------------------------------------------------
+# PLOT HELPER with CE/PE overlay + download
+# ---------------------------------------------------------------
+def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
+    prefixes = ["CE_", "PE_"] if opt_type in ["Both", "Overlay"] else [f"{opt_type}_"]
+    combined = pd.DataFrame()
 
     for pre in prefixes:
         col, s_col = f"{pre}{metric}", f"{pre}strikePrice"
@@ -112,58 +101,67 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None, ove
         tmp = df[df[s_col] == strike].copy().sort_values("timestamp")
         if tmp.empty:
             continue
-
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
         tmp["time_label"] = tmp["time_label"].astype(str)
-        tmp["Type"] = pre[:-1]
+        tmp["OptionType"] = pre.rstrip("_")
+        combined = pd.concat([combined, tmp], ignore_index=True)
 
-        df_out = pd.concat([df_out, tmp[["time_label", col, "Type"]]])
+    if combined.empty:
+        st.warning(f"No data for {label}")
+        return
 
-    # plot overlay if multiple types
-    if not df_out.empty:
-        if chart_type == "Line":
-            fig = px.line(
-                df_out,
+    # Chart type
+    if chart_type == "Line":
+        fig = px.line(
+            combined,
+            x="time_label",
+            y=[f"{p}{metric}" for p in prefixes if f"{p}{metric}" in combined.columns]
+            if opt_type == "Overlay"
+            else "value",
+            title=f"{label}{' (Overlay)' if opt_type=='Overlay' else ''}",
+        )
+    else:
+        if opt_type == "Overlay":
+            fig = px.bar(
+                combined,
                 x="time_label",
-                y=col,
-                color="Type",
-                title=f"{label} (Overlay)" if overlay else f"{label}",
-                markers=True,
+                y=[f"{p}{metric}" for p in prefixes if f"{p}{metric}" in combined.columns],
+                barmode="group",
+                title=f"{label} (Overlay)",
             )
         else:
-            fig = px.bar(
-                df_out,
-                x="time_label",
-                y=col,
-                color="Type",
-                barmode="group",
-                title=f"{label} (Overlay)" if overlay else f"{label}",
-            )
+            fig = px.bar(combined, x="time_label", y=f"{prefixes[0]}{metric}", title=f"{prefixes[0]}{label}")
 
-        if color:
-            fig.update_traces(marker_color=color)
+    # Basic styling
+    fig.update_layout(
+        height=400,
+        xaxis=dict(
+            type="category",
+            categoryorder="array",
+            categoryarray=list(combined["time_label"].unique()),
+            tickangle=-45,
+            tickfont=dict(size=10),
+        ),
+        xaxis_title="Time (HHMM)",
+        yaxis_title=label,
+    )
 
-        fig.update_layout(
-            height=400,
-            xaxis=dict(
-                type="category",
-                categoryorder="array",
-                categoryarray=list(df_out["time_label"].unique()),
-                tickangle=-45,
-                tickfont=dict(size=10),
-            ),
-            xaxis_title="Time (HHMM)",
-            yaxis_title=label,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-    return df_out.reset_index(drop=True)
+    # CSV export for this chart
+    csv_buffer = StringIO()
+    combined.to_csv(csv_buffer, index=False)
+    st.download_button(
+        label=f"⬇️ Download {label} Data CSV",
+        data=csv_buffer.getvalue(),
+        file_name=f"{label}_Strike{strike}_{opt_type}.csv",
+        mime="text/csv",
+    )
 
-# ---------------------------------------------------------------------
-# PANEL DEFINITION
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
+# PANEL DEFINITION (with overlay support)
+# ---------------------------------------------------------------
 def panel(name, color=None):
-    """UI + charts for one independent panel."""
     st.subheader(name)
     key = name.replace(" ", "_")
 
@@ -177,13 +175,17 @@ def panel(name, color=None):
         return
 
     strike = st.selectbox(f"{name} Strike", strikes, key=f"{key}_strike")
-    opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
-    overlay = st.checkbox("Overlay CE vs PE on same chart", key=f"{key}_overlay")
+    opt_type = st.radio(
+        "Option Type", ["CE", "PE", "Both", "Overlay"], key=f"{key}_type", horizontal=True
+    )
 
     c1, c2, c3 = st.columns(3)
-    with c1: price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
-    with c2: vol_chart   = st.radio("ΔVolume", ["Line", "Bar"], key=f"{key}_v", horizontal=True)
-    with c3: oi_chart    = st.radio("ΔOI", ["Line", "Bar"], key=f"{key}_o", horizontal=True)
+    with c1:
+        price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
+    with c2:
+        vol_chart = st.radio("ΔVolume", ["Line", "Bar"], key=f"{key}_v", horizontal=True)
+    with c3:
+        oi_chart = st.radio("ΔOI", ["Line", "Bar"], key=f"{key}_o", horizontal=True)
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
@@ -192,25 +194,18 @@ def panel(name, color=None):
             "price_chart": price_chart,
             "vol_chart": vol_chart,
             "oi_chart": oi_chart,
-            "overlay": overlay,
         }
 
     s = st.session_state.get(f"{key}_plot")
     if s:
         st.success(f"{s['opt_type']} | Strike {s['strike']}")
-        data_all = []
-        data_all.append(plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color, s["overlay"]))
-        data_all.append(plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color, s["overlay"]))
-        data_all.append(plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color, s["overlay"]))
+        plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color)
+        plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color)
+        plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color)
 
-        all_data = pd.concat(data_all).reset_index(drop=True)
-        if not all_data.empty:
-            csv_data = all_data.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download Chart Data", csv_data, file_name=f"{key}_plots.csv", mime="text/csv")
-
-# ---------------------------------------------------------------------
-# LAYOUT: PANEL A (default), PANEL B (green)
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------
+# LAYOUT: 2 PANELS
+# ---------------------------------------------------------------
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
