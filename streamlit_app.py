@@ -4,7 +4,7 @@ import plotly.express as px
 import re
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Stable ΔVolume + ΔOI per Strike)")
+st.title("📊 Options Data Viewer (All X‑Labels + Δ per Strike)")
 
 # -----------------------------------------
 # Upload CSVs
@@ -19,7 +19,7 @@ if not files:
     st.stop()
 
 def get_time_from_filename(name):
-    m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
+    m = re.search(r"_(\\d{2})(\\d{2})(\\d{4})_(\\d{2})(\\d{2})(\\d{2})", name)
     if not m:
         return None
     d, mo, y, h, mi, s = m.groups()
@@ -56,7 +56,7 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(f"{prefix}strikePrice", group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper (robust for bar charts)
+# Plot helper (show all x‑labels)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = []
@@ -72,24 +72,26 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp = df[df[f"{pre}strikePrice"] == strike].copy()
         tmp["time"] = pd.to_datetime(tmp["timestamp"], format="%d-%m-%Y %H:%M:%S")
         tmp = tmp.sort_values("time")
-
-        # ensure numeric values for bar charts
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
 
-        if chart_type == "Line":
-            fig = px.line(tmp, x="time", y=col, title=f"{pre}{label}", markers=True)
-            if color:
+        x_vals = tmp["time"].tolist()
+
+        fig_func = px.line if chart_type == "Line" else px.bar
+        fig = fig_func(tmp, x="time", y=col, title=f"{pre}{label}", markers=True)
+
+        if color:
+            if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
-        else:
-            fig = px.bar(tmp, x="time", y=col, title=f"{pre}{label}")
-            if color:
+            else:
                 fig.update_traces(marker_color=color)
 
         fig.update_layout(
             height=400,
             xaxis=dict(
-                tickmode="linear",
-                tickvals=tmp["time"],
+                tickmode="array",
+                tickvals=x_vals,
+                ticktext=[t.strftime("%H:%M:%S") for t in x_vals],
+                ticks="outside",
                 tickangle=-45,
                 tickfont=dict(size=9),
             ),
@@ -112,20 +114,14 @@ def panel(name, color=None):
         "Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True
     )
 
-    st.markdown("**Chart Types** (choose per metric):")
+    st.markdown("**Chart Types** (per metric):")
     c1, c2, c3 = st.columns(3)
     with c1:
-        price_chart = st.radio(
-            "Price", ["Line", "Bar"], key=f"{key}_price", horizontal=True
-        )
+        price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_price", horizontal=True)
     with c2:
-        vol_chart = st.radio(
-            "ΔVolume", ["Line", "Bar"], key=f"{key}_vol", horizontal=True
-        )
+        vol_chart = st.radio("ΔVolume", ["Line", "Bar"], key=f"{key}_vol", horizontal=True)
     with c3:
-        oi_chart = st.radio(
-            "ΔOI (per strike)", ["Line", "Bar"], key=f"{key}_oi", horizontal=True
-        )
+        oi_chart = st.radio("ΔOI (per strike)", ["Line", "Bar"], key=f"{key}_oi", horizontal=True)
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
@@ -139,21 +135,12 @@ def panel(name, color=None):
     saved = st.session_state.get(f"{key}_plot", None)
     if saved:
         st.success(f"Strike {saved['strike']} | {saved['opt_type']}")
-        plot_metric(
-            "lastPrice", "Price", df,
-            saved["strike"], saved["opt_type"], saved["price_chart"], color
-        )
-        plot_metric(
-            "volChange", "ΔVolume", df,
-            saved["strike"], saved["opt_type"], saved["vol_chart"], color
-        )
-        plot_metric(
-            "oiChange", "ΔOI (per strike)", df,
-            saved["strike"], saved["opt_type"], saved["oi_chart"], color
-        )
+        plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
+        plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
+        plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
 
 # -----------------------------------------
-# Layout: Panel A then B (green)
+# Layout: Panel A then B (green)
 # -----------------------------------------
 panel("Panel A")
 st.markdown("---")
