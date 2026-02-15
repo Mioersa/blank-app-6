@@ -8,7 +8,7 @@ import re
 # ---------------------------------------------------------------------
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (HHMM Labels · Clear Uploads · Dual Panels)")
+st.title("📊 Options Data Viewer (Smart Column Detection · Dual Panels)")
 
 # ---------------------------------------------------------------------
 # FILE UPLOAD + CLEAR BUTTON
@@ -43,7 +43,7 @@ def parse_filename(name):
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"  # prefix T ➜ categorical label
+    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"
 
 # ---------------------------------------------------------------------
 # READ + COMBINE FILES
@@ -72,6 +72,31 @@ if not frames:
 df = pd.concat(frames)
 df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+
+# ---------------------------------------------------------------------
+# AUTO-DETECT PREFIXES (CE/PE or CALL/PUT)
+# ---------------------------------------------------------------------
+
+cols_lower = [c.lower() for c in df.columns]
+prefix_candidates = []
+for prefix in ["ce_", "pe_", "call_", "put_"]:
+    if any(c.startswith(prefix) for c in cols_lower):
+        prefix_candidates.append(prefix)
+
+if not prefix_candidates:
+    st.error("⚠️ No recognizable CE/PE or CALL/PUT columns found.")
+    st.write("Detected columns:", df.columns.tolist())
+    st.stop()
+
+def normalize_prefix(col):
+    """Normalize CALL_/PUT_ to CE_/PE_ for consistency."""
+    if col.lower().startswith("call_"):
+        return "CE_" + col.split("_", 1)[1]
+    elif col.lower().startswith("put_"):
+        return "PE_" + col.split("_", 1)[1]
+    return col
+
+df.columns = [normalize_prefix(c) for c in df.columns]
 
 # ---------------------------------------------------------------------
 # COMPUTE ΔVOLUME AND ΔOI PER STRIKE
@@ -110,20 +135,18 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
         tmp["time_label"] = tmp["time_label"].astype(str)
 
-        # choose chart type
-        if chart_type == "Line":
-            fig = px.line(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
-        else:
-            fig = px.bar(tmp, x="time_label", y=col, title=f"{pre}{label}")
+        fig = (
+            px.line(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+            if chart_type == "Line"
+            else px.bar(tmp, x="time_label", y=col, title=f"{pre}{label}")
+        )
 
-        # apply optional color by panel
         if color:
             if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
             else:
                 fig.update_traces(marker_color=color)
 
-        # show all HHMM labels exactly once, no grouping
         fig.update_layout(
             height=400,
             xaxis=dict(
@@ -139,27 +162,29 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
-# PANEL DEFINITION
+# PANEL DEFINITION (tolerant strike detection)
 # ---------------------------------------------------------------------
 
 def panel(name, color=None):
-    """UI + charts for one independent panel."""
     st.subheader(name)
     key = name.replace(" ", "_")
 
-    # strike selection from CE or PE data
-    if "CE_strikePrice" in df.columns:
-        strikes = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
-    elif "PE_strikePrice" in df.columns:
-        strikes = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique())
+    cols_lower = {c.lower(): c for c in df.columns}
+    ce_key = next((v for k, v in cols_lower.items() if "ce_strike" in k), None)
+    pe_key = next((v for k, v in cols_lower.items() if "pe_strike" in k), None)
+
+    if ce_key:
+        strikes = sorted(pd.to_numeric(df[ce_key], errors="coerce").dropna().unique())
+    elif pe_key:
+        strikes = sorted(pd.to_numeric(df[pe_key], errors="coerce").dropna().unique())
     else:
-        st.warning("No strike column found.")
+        st.warning("⚠️ No strike column found — check headers below:")
+        st.write(df.columns.tolist())
         return
 
     strike = st.selectbox(f"{name} Strike", strikes, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
 
-    # chart type selectors per metric
     c1, c2, c3 = st.columns(3)
     with c1:
         price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
@@ -168,7 +193,6 @@ def panel(name, color=None):
     with c3:
         oi_chart = st.radio("ΔOI", ["Line", "Bar"], key=f"{key}_o", horizontal=True)
 
-    # plot button stores state
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
             "strike": strike,
@@ -178,7 +202,6 @@ def panel(name, color=None):
             "oi_chart": oi_chart,
         }
 
-    # render saved plot
     s = st.session_state.get(f"{key}_plot")
     if s:
         st.success(f"{s['opt_type']} | Strike {s['strike']}")
@@ -193,3 +216,5 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
+
+
