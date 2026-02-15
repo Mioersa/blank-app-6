@@ -3,147 +3,84 @@ import pandas as pd
 import plotly.express as px
 import re
 
-# ---------------------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------------------
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (Robust Strike Finder · Dual Panels)")
+st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
 
-# ---------------------------------------------------------------------
-# FILE UPLOAD + CLEAR
-# ---------------------------------------------------------------------
-if "uploaded_files" not in st.session_state:
-    st.session_state["uploaded_files"] = None
-
-if st.button("🗑️ Clear uploaded files"):
-    st.session_state.clear()
-    st.experimental_rerun()
-
-uploaded = st.file_uploader(
-    "Upload one or more CSV files (_DDMMYYYY_HHMMSS.csv)",
+# -----------------------------------------
+# Upload CSVs
+# -----------------------------------------
+files = st.file_uploader(
+    "Upload multiple CSVs (_DDMMYYYY_HHMMSS.csv)",
     type=["csv"],
     accept_multiple_files=True,
 )
-if uploaded:
-    st.session_state["uploaded_files"] = uploaded
-
-files = st.session_state.get("uploaded_files", [])
 if not files:
-    st.info("👆 Upload CSVs to begin")
+    st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
-# ---------------------------------------------------------------------
-# 1️⃣  READ FILES SAFELY
-# ---------------------------------------------------------------------
-frames = []
-valid_files = []
-
-for f in files:
-    try:
-        df = pd.read_csv(f)
-        # guard: pandas can return EmptyDataError OR df.shape=(0,0)
-        if df.empty or df.shape[1] == 0:
-            st.warning(f"⚠️ Skipped: {f.name} (empty / no columns)")
-            continue
-        df.columns = [c.strip().replace(" ", "_") for c in df.columns]
-        valid_files.append((f, df))
-        frames.append(df)
-    except Exception as e:
-        st.warning(f"⚠️ Skipped {f.name}: {e}")
-
-if not frames:
-    st.error("❌ No valid CSVs found.")
-    st.stop()
-
-# combine all
-df = pd.concat(frames, ignore_index=True)
-df = df.loc[:, ~df.columns.duplicated()]
-
-# ---------------------------------------------------------------------
-# 2️⃣  STRIKE COLUMN FROM FIRST VALID FILE
-# ---------------------------------------------------------------------
-first_name, first_df = valid_files[0]
-strike_cols = [c for c in first_df.columns if re.search("strike", c, re.IGNORECASE)]
-
-if not strike_cols:
-    st.error("No 'strike' column found in first file.")
-    st.write("Detected:", first_df.columns.tolist())
-    st.stop()
-
-strike_col = strike_cols[0]
-
-# dropdown values
-try:
-    strike_values = (
-        pd.to_numeric(first_df[strike_col], errors="coerce").dropna().unique()
-    )
-    strike_values = sorted(strike_values)
-except Exception:
-    strike_values = sorted(first_df[strike_col].dropna().unique())
-
-if not len(strike_values):
-    st.error(f"No valid entries in `{strike_col}` of {first_name.name}")
-    st.stop()
-
-selected_strike = st.selectbox(
-    f"Select strike value from `{strike_col}` of {first_name.name}", strike_values
-)
-st.markdown("---")
-
-# ---------------------------------------------------------------------
-# 3️⃣  TIMESTAMP PARSER
-# ---------------------------------------------------------------------
-def parse_filename(name):
-    m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})", name)
+def get_time_from_filename(name):
+    m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
-    return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"T{h}{mi}"
+    full = f"{d}-{mo}-{y} {h}:{mi}:{s}"
+    short = f"{h}{mi}"  # HHMM
+    return full, short
 
-# ensure timestamp/time_label exist
-if "timestamp" not in df.columns:
-    df["timestamp"], df["time_label"] = None, None
+# -----------------------------------------
+# Combine uploaded CSVs
+# -----------------------------------------
+frames = []
+for f in files:
+    df = pd.read_csv(f)
+    full, short = get_time_from_filename(f.name)
+    df["timestamp"] = full
+    df["time_label"] = short
+    frames.append(df)
 
-# ---------------------------------------------------------------------
-# 4️⃣  OPTIONAL CALC ΔVOLUME / ΔOI
-# ---------------------------------------------------------------------
+df = pd.concat(frames)
+df.dropna(subset=["timestamp"], inplace=True)
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# -----------------------------------------
+# ΔVolume / ΔOI per strike
+# -----------------------------------------
 for prefix in ["CE_", "PE_"]:
-    vol, oi, strike = f"{prefix}totalTradedVolume", f"{prefix}openInterest", f"{prefix}strikePrice"
-    if not all(c in df.columns for c in [vol, oi, strike]):
+    vol_col = f"{prefix}totalTradedVolume"
+    oi_col = f"{prefix}openInterest"
+    strike_col = f"{prefix}strikePrice"
+    if not all(col in df.columns for col in [vol_col, oi_col, strike_col]):
         continue
 
-    def add_delta(g):
+    def add_deltas(g):
         g = g.sort_values("timestamp")
-        g[f"{prefix}volChange"] = g[vol].diff().fillna(0)
-        g[f"{prefix}oiChange"] = g[oi].diff().fillna(0)
+        g[f"{prefix}volChange"] = g[vol_col].diff().fillna(0)
+        g[f"{prefix}oiChange"] = g[oi_col].diff().fillna(0)
         return g
 
-    df = df.groupby(strike, group_keys=False).apply(add_delta)
+    df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
-# ---------------------------------------------------------------------
-# 5️⃣  PLOT HELPER
-# ---------------------------------------------------------------------
+# -----------------------------------------
+# Plot helper (more robust)
+# -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
-
     for pre in prefixes:
-        col, s_col = f"{pre}{metric}", f"{pre}strikePrice"
-        if col not in df.columns or s_col not in df.columns:
+        col = f"{pre}{metric}"
+        strike_col = f"{pre}strikePrice"
+        if col not in df.columns or strike_col not in df.columns:
             continue
 
-        tmp = df[df[s_col] == strike].copy()
+        tmp = df[df[strike_col] == strike].copy()
+        tmp = tmp.sort_values("timestamp")
         if tmp.empty:
             continue
 
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
-        tmp["time_label"] = tmp.get("time_label", range(len(tmp)))
+        tmp["time_label"] = tmp["time_label"].astype(str)
 
-        fig = (
-            px.line(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
-            if chart_type == "Line"
-            else px.bar(tmp, x="time_label", y=col, title=f"{pre}{label}")
-        )
-
+        fig_func = px.line if chart_type == "Line" else px.bar
+        fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
         if color:
             if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
@@ -154,17 +91,36 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             height=400,
             xaxis_title="Time (HHMM)",
             yaxis_title=label,
+            xaxis=dict(
+                tickmode="array",
+                tickvals=list(tmp["time_label"]),
+                ticktext=list(tmp["time_label"]),
+                tickangle=-45,
+                tickfont=dict(size=10),
+            ),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------------------
-# 6️⃣  PANEL
-# ---------------------------------------------------------------------
+# -----------------------------------------
+# Panel definition
+# -----------------------------------------
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
+    strike_list = []
+    if "CE_strikePrice" in df.columns:
+        strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
+    elif "PE_strikePrice" in df.columns:
+        strike_list = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique().tolist())
 
+    if not strike_list:
+        st.warning("No strikes detected in data.")
+        return
+
+    strike = st.selectbox(f"{name} Strike", strike_list, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
+
+    st.markdown("**Chart Types (per metric)**")
     c1, c2, c3 = st.columns(3)
     with c1:
         price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
@@ -175,23 +131,23 @@ def panel(name, color=None):
 
     if st.button("Plot", key=f"{key}_btn"):
         st.session_state[f"{key}_plot"] = {
-            "strike": selected_strike,
+            "strike": strike,
             "opt_type": opt_type,
             "price_chart": price_chart,
             "vol_chart": vol_chart,
-            "oi_chart": oi_chart,
+            "oi_chart": oi_chart
         }
 
-    s = st.session_state.get(f"{key}_plot")
-    if s:
-        st.success(f"{s['opt_type']} | Strike {s['strike']}")
-        plot_metric("lastPrice", "Price", df, s["strike"], s["opt_type"], s["price_chart"], color)
-        plot_metric("volChange", "ΔVolume", df, s["strike"], s["opt_type"], s["vol_chart"], color)
-        plot_metric("oiChange", "ΔOI (per strike)", df, s["strike"], s["opt_type"], s["oi_chart"], color)
+    saved = st.session_state.get(f"{key}_plot", None)
+    if saved:
+        st.success(f"{saved['opt_type']} | Strike {saved['strike']}")
+        plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
+        plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
+        plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
 
-# ---------------------------------------------------------------------
-# 7️⃣  LAYOUT
-# ---------------------------------------------------------------------
-panel("Panel A")
+# -----------------------------------------
+# Panels stacked
+# -----------------------------------------
+panel("Panel A")
 st.markdown("---")
-panel("Panel B", color="green")
+panel("Panel B", color="green")
