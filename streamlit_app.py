@@ -7,36 +7,19 @@ st.set_page_config(page_title="Options Data Viewer", layout="wide")
 st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
 
 # -----------------------------------------
-# Upload CSVs + Clear option
+# Upload CSVs
 # -----------------------------------------
-if "uploaded_files" not in st.session_state:
-    st.session_state["uploaded_files"] = []
-
-clear = st.button("🧹 Clear uploaded files")
-if clear:
-    st.session_state["uploaded_files"] = []
-    st.experimental_rerun()
-
 files = st.file_uploader(
     "Upload multiple CSVs (_DDMMYYYY_HHMMSS.csv)",
     type=["csv"],
     accept_multiple_files=True,
 )
-
-if files:
-    st.session_state["uploaded_files"].extend(files)
-
-if not st.session_state["uploaded_files"]:
+if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
-files = st.session_state["uploaded_files"]
-
-# -----------------------------------------
-# Helpers
-# -----------------------------------------
 def get_time_from_filename(name):
-    m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
+    m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
@@ -78,7 +61,7 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper
+# Plot helper (more robust)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -124,6 +107,7 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
+
     strike_list = []
     if "CE_strikePrice" in df.columns:
         strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
@@ -158,29 +142,6 @@ def panel(name, color=None):
     saved = st.session_state.get(f"{key}_plot", None)
     if saved:
         st.success(f"{saved['opt_type']} | Strike {saved['strike']}")
-
-        # ------------------------------------------------
-        # New: Download chart data (CSV)
-        prefixes = ["CE_", "PE_"] if saved["opt_type"] == "Both" else [f"{saved['opt_type']}_"]
-        export_frames = []
-        for pre in prefixes:
-            strike_col = f"{pre}strikePrice"
-            if strike_col not in df.columns:
-                continue
-            sub = df[df[strike_col] == saved["strike"]].copy()
-            sub = sub.sort_values("timestamp")
-            export_frames.append(sub)
-        if export_frames:
-            export_df = pd.concat(export_frames)
-            csv_bytes = export_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Download chart data (CSV)",
-                data=csv_bytes,
-                file_name=f"{key}_chart_data.csv",
-                mime="text/csv",
-            )
-        # ------------------------------------------------
-
         plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
         plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
