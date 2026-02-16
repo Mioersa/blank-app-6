@@ -3,9 +3,10 @@ import pandas as pd
 import plotly.express as px
 import re
 from io import StringIO
+from datetime import time
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
-st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
+st.title("📊 Options Data Viewer (Δ‑Metrics + Correlation)")
 
 # -----------------------------------------
 # Upload CSVs
@@ -82,16 +83,15 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp["time_label"] = tmp["time_label"].astype(str)
         tmp["x_index"] = range(len(tmp))
 
-        fig_func = px.line if chart_type == "Line" else px.bar
-        fig = fig_func(tmp, x="x_index", y=col, title=f"{pre}{label}", markers=(chart_type == "Line"))
+        # ✅ chart creation fix
+        if chart_type == "Line":
+            fig = px.line(tmp, x="x_index", y=col, title=f"{pre}{label}", markers=True)
+        else:
+            fig = px.bar(tmp, x="x_index", y=col, title=f"{pre}{label}")
 
         if color:
-            if chart_type == "Line":
-                fig.update_traces(line_color=color, marker_color=color)
-            else:
-                fig.update_traces(marker_color=color)
+            fig.update_traces(line_color=color, marker_color=color)
 
-        tick_texts = [f"T{t}" for t in tmp["time_label"]]
         fig.update_layout(
             height=400,
             xaxis_title="Time (HHMM)",
@@ -99,42 +99,41 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             xaxis=dict(
                 tickmode="array",
                 tickvals=list(tmp["x_index"]),
-                ticktext=tick_texts,
+                ticktext=[f"T{t}" for t in tmp["time_label"]],
                 tickangle=-45,
                 tickfont=dict(size=10),
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        csv_buffer = StringIO()
-        tmp.to_csv(csv_buffer, index=False)
+        buff = StringIO()
+        tmp.to_csv(buff, index=False)
         st.download_button(
-            label=f"📥 Download {pre}{label} data (CSV)",
-            data=csv_buffer.getvalue(),
-            file_name=f"{pre}{metric}_{strike}_{chart_type}.csv",
+            label=f"📥 Download {pre}{label} CSV",
+            data=buff.getvalue(),
+            file_name=f"{pre}{metric}_{strike}.csv",
             mime="text/csv",
         )
 
 # -----------------------------------------
-# Panels A and B
+# Panels A/B
 # -----------------------------------------
 def panel(name, color=None):
     st.subheader(name)
     key = name.replace(" ", "_")
-    strike_list = []
+    strikes = []
     if "CE_strikePrice" in df.columns:
-        strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
+        strikes = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
     elif "PE_strikePrice" in df.columns:
-        strike_list = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique().tolist())
+        strikes = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique())
 
-    if not strike_list:
-        st.warning("No strikes detected in data.")
+    if not strikes.any():
+        st.warning("No strikes detected.")
         return
 
-    strike = st.selectbox(f"{name} Strike", strike_list, key=f"{key}_strike")
+    strike = st.selectbox(f"{name} Strike", strikes, key=f"{key}_strike")
     opt_type = st.radio("Option Type", ["CE", "PE", "Both"], key=f"{key}_type", horizontal=True)
 
-    st.markdown("**Chart Types (per metric)**")
     c1, c2, c3 = st.columns(3)
     with c1:
         price_chart = st.radio("Price", ["Line", "Bar"], key=f"{key}_p", horizontal=True)
@@ -144,17 +143,17 @@ def panel(name, color=None):
         oi_chart = st.radio("ΔOI", ["Line", "Bar"], key=f"{key}_o", horizontal=True)
 
     if st.button("Plot", key=f"{key}_btn"):
-        st.session_state[f"{key}_plot"] = {
-            "strike": strike,
-            "opt_type": opt_type,
-            "price_chart": price_chart,
-            "vol_chart": vol_chart,
-            "oi_chart": oi_chart,
-        }
+        st.session_state[f"{key}_plot"] = dict(
+            strike=strike,
+            opt_type=opt_type,
+            price_chart=price_chart,
+            vol_chart=vol_chart,
+            oi_chart=oi_chart,
+        )
 
-    saved = st.session_state.get(f"{key}_plot", None)
+    saved = st.session_state.get(f"{key}_plot")
     if saved:
-        st.success(f"{saved['opt_type']} | Strike {saved['strike']}")
+        st.success(f"{saved['opt_type']} | Strike {saved['strike']}")
         plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
         plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
@@ -164,67 +163,57 @@ st.markdown("---")
 panel("Panel B", color="green")
 
 # -----------------------------------------
-# Panel C – Correlation with time slider
+# Panel C – Δ‑Metric Correlation with Time Slider
 # -----------------------------------------
 st.markdown("---")
-st.subheader("📈 Panel C – Δ‑Metric Correlation (Price Δ / Vol Δ / OI Δ / IV Δ | CE + PE)")
+st.subheader("📈 Panel C – Δ‑Metric Correlation (ΔPrice / ΔIV / ΔVol / ΔOI)")
 
-strike_list = []
 if "CE_strikePrice" in df.columns:
-    strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
+    strikes = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
 elif "PE_strikePrice" in df.columns:
-    strike_list = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique().tolist())
-
-if not strike_list:
-    st.warning("No strikes detected.")
+    strikes = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique())
 else:
-    strike = st.selectbox("Strike (Correlation view)", strike_list)
+    strikes = []
 
-    # slider on timestamp
-    min_t, max_t = df["timestamp"].min(), df["timestamp"].max()
-    t_range = st.slider("Select time range for correlation", min_t, max_t, (min_t, max_t), format="HH:mm")
-
-    df_range = df[(df["timestamp"] >= pd.to_datetime(t_range[0])) & (df["timestamp"] <= pd.to_datetime(t_range[1]))]
+if not any(strikes):
+    st.warning("No strikes available.")
+else:
+    strike = st.selectbox("Strike (Correlation view)", strikes)
+    # ✅ datetime slider fix
+    min_t, max_t = df["timestamp"].min().to_pydatetime(), df["timestamp"].max().to_pydatetime()
+    t_start, t_end = st.slider("Time Range",
+                               min_value=min_t,
+                               max_value=max_t,
+                               value=(min_t, max_t),
+                               format="HH:mm")
+    df_slice = df[(df["timestamp"] >= t_start) & (df["timestamp"] <= t_end)]
 
     corr_frames = []
     for pre in ["CE_", "PE_"]:
-        needed = [
-            f"{pre}volChange",
-            f"{pre}priceChange",
-            f"{pre}oiChange",
-            f"{pre}ivChange",
-        ]
-        exist = [c for c in needed if c in df_range.columns]
-        if len(exist) < 2:
+        needed = [f"{pre}{x}" for x in ["volChange", "priceChange", "oiChange", "ivChange"]]
+        existing = [c for c in needed if c in df_slice.columns]
+        if not existing:
             continue
-        tmp = df_range[df_range[f"{pre}strikePrice"] == strike][exist].copy()
-        if not tmp.empty:
-            tmp.columns = [c.replace(pre, "") + f"_{pre[:-1]}" for c in tmp.columns]
-            corr_frames.append(tmp.reset_index(drop=True))
+        tmp = df_slice[df_slice[f"{pre}strikePrice"] == strike][existing].copy()
+        if tmp.empty:
+            continue
+        tmp.columns = [c.replace(pre, "") + f"_{pre[:-1]}" for c in tmp.columns]
+        corr_frames.append(tmp.reset_index(drop=True))
 
     if not corr_frames:
-        st.warning("Not enough columns for correlation.")
+        st.warning("No Δ‑metric data for correlation.")
     else:
         merged = pd.concat(corr_frames, axis=1)
         corr = merged.corr().round(2)
 
-        st.write(f"Correlation | Strike {strike} | {t_range[0].strftime('%H:%M')}–{t_range[1].strftime('%H:%M')}")
+        st.write(f"Δ‑Metric Correlation | {t_start.strftime('%H:%M')}–{t_end.strftime('%H:%M')} | Strike {strike}")
         st.dataframe(corr)
 
-        fig = px.imshow(
-            corr,
-            text_auto=True,
-            color_continuous_scale="RdYlGn",
-            title=f"Δ‑Metric Correlation ({strike})",
-        )
+        fig = px.imshow(corr, text_auto=True, color_continuous_scale="RdYlGn",
+                        title=f"Δ‑Metric Correlation (Strike {strike})")
         fig.update_layout(height=450)
         st.plotly_chart(fig, use_container_width=True)
 
-        csv_buffer = StringIO()
-        corr.to_csv(csv_buffer)
-        st.download_button(
-            label=f"📥 Download correlation ({strike}).csv",
-            data=csv_buffer.getvalue(),
-            file_name=f"correlation_{strike}.csv",
-            mime="text/csv",
-        )
+        buff = StringIO()
+        corr.to_csv(buff)
+        st.download_button("📥 Download correlation CSV", buff.getvalue(), f"correlation_{strike}.csv", mime="text/csv")
