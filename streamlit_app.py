@@ -66,9 +66,26 @@ def plot_metric(metric,label,df,strike,opt_type,style,color=None):
         tmp=df[df[s_col]==strike].sort_values("timestamp")
         if tmp.empty: continue
         tmp["x"]=range(len(tmp))
-        fig=px.line(tmp,x="x",y=col,title=f"{pre}{label}",markers=(style=="Line")) if style=="Line" else px.bar(tmp,x="x",y=col,title=f"{pre}{label}")
-        if color: fig.update_traces(marker_color=color,line_color=color)
-        fig.update_layout(height=400,xaxis=dict(ticktext=[f"T{t}" for t in tmp["time_label"]],tickvals=tmp["x"],tickangle=-45),yaxis_title=label)
+        if style=="Line":
+            fig=px.line(tmp,x="x",y=col,title=f"{pre}{label}",markers=True)
+        else:
+            fig=px.bar(tmp,x="x",y=col,title=f"{pre}{label}")
+        # ---- fixed color handling ----
+        if color:
+            update_args=dict(marker_color=color)
+            if style=="Line":
+                update_args["line_color"]=color
+            fig.update_traces(**update_args)
+        # -------------------------------
+        fig.update_layout(
+            height=400,
+            xaxis=dict(
+                ticktext=[f"T{t}" for t in tmp["time_label"]],
+                tickvals=tmp["x"],
+                tickangle=-45,
+            ),
+            yaxis_title=label,
+        )
         st.plotly_chart(fig,use_container_width=True)
 
 # -----------------------------------------
@@ -163,7 +180,6 @@ for s in strikes:
 if results:
     out=pd.DataFrame(results)
     out["Bias"]=out.apply(lambda r:"Bullish" if r.get("CE_Strength",0)>r.get("PE_Strength",0) else "Bearish",axis=1)
-    # safe color style (no matplotlib)
     bias_colors={"Bullish":"#ccffcc","Bearish":"#ffcccc"}
     def color_bias(v): return f"background-color:{bias_colors.get(v,'')}"
     st.dataframe(out.style.applymap(color_bias,subset=["Bias"]).format(precision=3))
