@@ -127,7 +127,7 @@ def panel(name, color=None):
     elif "PE_strikePrice" in df.columns:
         strikes = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique())
 
-    if not strikes.any():
+    if not strikes:
         st.warning("No strikes detected.")
         return
 
@@ -175,7 +175,7 @@ elif "PE_strikePrice" in df.columns:
 else:
     strikes = []
 
-if not any(strikes):
+if not strikes:
     st.warning("No strikes available.")
 else:
     strike = st.selectbox("Strike (Correlation view)", strikes)
