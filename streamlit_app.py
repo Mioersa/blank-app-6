@@ -19,12 +19,14 @@ if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
+
 def parse_time(name):
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
     return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"{h}{mi}"
+
 
 frames = []
 for f in files:
@@ -116,7 +118,6 @@ def panel(name, color=None):
         strikes = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique())
     elif "PE_strikePrice" in df.columns:
         strikes = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique())
-
     if not strikes:
         st.warning("No strikes detected.")
         return
@@ -130,10 +131,8 @@ def panel(name, color=None):
         v_style = st.radio("ΔVolume", ["Line", "Bar"], key=f"{name}_v")
     with c3:
         o_style = st.radio("ΔOI", ["Line", "Bar"], key=f"{name}_o")
-
     if st.button("Plot", key=f"{name}_btn"):
         st.session_state[f"{name}_plot"] = dict(strike=strike, opt=opt_type, p=p_style, v=v_style, o=o_style)
-
     saved = st.session_state.get(f"{name}_plot")
     if saved:
         st.success(f"{saved['opt']} | Strike {saved['strike']}")
@@ -146,7 +145,7 @@ st.markdown("---")
 panel("Panel B", color="green")
 
 # -----------------------------------------
-# Panel C – Intra‑Side Δ‑Correlations
+# Panel C – Intra‑Side Δ‑Correlations + CEvsPE compare
 # -----------------------------------------
 st.markdown("---")
 st.subheader("📈 Panel C – Intra‑Side Δ‑Correlations (ΔPrice vs ΔVol/ΔOI/ΔIV)")
@@ -159,49 +158,50 @@ if not strikes:
 else:
     strike = st.selectbox("Strike (Relation check)", strikes)
     min_t, max_t = df["timestamp"].min().to_pydatetime(), df["timestamp"].max().to_pydatetime()
-    t_start, t_end = st.slider(
-        "Select time range",
-        min_value=min_t,
-        max_value=max_t,
-        value=(min_t, max_t),
-        format="HH:mm",
-    )
+    t_start, t_end = st.slider("Select time range",
+                               min_value=min_t, max_value=max_t,
+                               value=(min_t, max_t), format="HH:mm")
     df_range = df[(df["timestamp"] >= t_start) & (df["timestamp"] <= t_end)]
     st.markdown(f"### Strike {strike} | {t_start.strftime('%H:%M')} → {t_end.strftime('%H:%M')}")
 
-    def summarize_side(prefix, label_color):
+    def get_side_corrs(prefix):
+        out = {}
         cols = [f"{prefix}{x}" for x in ["priceChange", "volChange", "oiChange", "ivChange"]]
         if not all(c in df_range.columns for c in cols):
-            return []
+            return out
         d = df_range[df_range[f"{prefix}strikePrice"] == strike].dropna(subset=cols)
         if d.empty:
-            return []
-        rels = []
-        pairs = {
-            "ΔPrice vs ΔVolume": ("priceChange", "volChange"),
-            "ΔPrice vs ΔOI": ("priceChange", "oiChange"),
-            "ΔPrice vs ΔIV": ("priceChange", "ivChange"),
-        }
-        for name, (a, b) in pairs.items():
-            val = d[f"{prefix}{a}"].corr(d[f"{prefix}{b}"])
-            if pd.notna(val):
-                direction = "positively" if val > 0 else "negatively"
-                strength = "strongly" if abs(val) >= 0.7 else "moderately" if abs(val) >= 0.4 else "weakly"
-                rels.append(
-                    f"{label_color} {name} → {strength} {direction} correlated (ρ = {val:.2f})"
+            return out
+        pairs = dict(ΔVol=("priceChange","volChange"),
+                     ΔOI=("priceChange","oiChange"),
+                     ΔIV=("priceChange","ivChange"))
+        for lbl,(a,b) in pairs.items():
+            out[lbl] = d[f"{prefix}{a}"].corr(d[f"{prefix}{b}"])
+        return out
+
+    ce_corr = get_side_corrs("CE_")
+    pe_corr = get_side_corrs("PE_")
+
+    lines = []
+    for lbl in ["ΔVol", "ΔOI", "ΔIV"]:
+        if lbl in ce_corr or lbl in pe_corr:
+            ce_v, pe_v = ce_corr.get(lbl, None), pe_corr.get(lbl, None)
+            if all(pd.notna([ce_v, pe_v])):
+                stronger = "🟢 CE stronger" if abs(ce_v) > abs(pe_v) else "🔴 PE stronger"
+                lines.append(
+                    f"{lbl}: | CE ρ = {ce_v:.2f} | PE ρ = {pe_v:.2f} → **{stronger}**"
                 )
-        return rels
+    # Show per‑side detail
+    for lbl,val in ce_corr.items():
+        if pd.notna(val):
+            st.write(f"🟢 CE side ΔPrice vs {lbl}: ρ = {val:.2f}")
+    for lbl,val in pe_corr.items():
+        if pd.notna(val):
+            st.write(f"🔴 PE side ΔPrice vs {lbl}: ρ = {val:.2f}")
 
-    ce_lines = summarize_side("CE_", "🟢 CE‑side")
-    pe_lines = summarize_side("PE_", "🔴 PE‑side")
-
-    if (not ce_lines) and (not pe_lines):
-        st.info("No sufficient Δ‑data for correlations.")
-    else:
-        if ce_lines:
-            st.markdown("\n".join(ce_lines))
-        if pe_lines:
-            st.markdown("\n".join(pe_lines))
+    if lines:
+        st.markdown("**➡ Comparative Summary (CE vs PE)**")
+        st.markdown("\n".join(lines))
 
 # -----------------------------------------
 # Panel D – Composite Strength (CE vs PE)
@@ -232,12 +232,30 @@ for strike in strikes:
 if results:
     out = pd.DataFrame(results)
     out["Bias"] = out.apply(
-        lambda r: "Bull" if r.get("CE_Strength", 0) > r.get("PE_Strength", 0) else "Bear",
+        lambda r: "Bullish" if r.get("CE_Strength",0) > r.get("PE_Strength",0) else "Bearish",
         axis=1,
     )
-    st.dataframe(out.round(3))
+    # Color style for Bias column
+    st.dataframe(
+        out.style.background_gradient(
+            subset=["CE_Strength","PE_Strength"],
+            cmap="RdYlGn",
+            vmin=-1, vmax=1
+        ).applymap(
+            lambda v: "background-color:#b4f0b4" if v=="Bullish" else "background-color:#f5b4b4",
+            subset=["Bias"]
+        ).format(precision=3)
+    )
+
+    overall = (
+        "🟢 Overall Bias = CE (Bullish)"
+        if out["CE_Strength"].mean() > out["PE_Strength"].mean()
+        else "🔴 Overall Bias = PE (Bearish)"
+    )
+    st.markdown(f"### {overall}")
+
     fig = px.bar(out, x="Strike", y=["CE_Strength", "PE_Strength"], barmode="group",
-                 title="Composite Strength (CE vs PE)")
+                 title="Composite Strength Comparison (CE vs PE)")
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No valid strength data yet.")
