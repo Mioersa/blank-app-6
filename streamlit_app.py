@@ -19,7 +19,6 @@ if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
-
 def get_time_from_filename(name):
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
@@ -28,7 +27,6 @@ def get_time_from_filename(name):
     full = f"{d}-{mo}-{y} {h}:{mi}:{s}"
     short = f"{h}{mi}"
     return full, short
-
 
 # -----------------------------------------
 # Combine uploaded CSVs
@@ -63,9 +61,8 @@ for prefix in ["CE_", "PE_"]:
 
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
-
 # -----------------------------------------
-# Plot helper (bar fix + download option)
+# Plot helper
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -83,7 +80,6 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp["time_label"] = tmp["time_label"].astype(str)
 
         fig_func = px.line if chart_type == "Line" else px.bar
-        # ✅ Bar chart fix
         if chart_type == "Line":
             fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
         else:
@@ -95,6 +91,7 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             else:
                 fig.update_traces(marker_color=color)
 
+        # prefix 'T' to x labels
         fig.update_layout(
             height=400,
             xaxis_title="Time (HHMM)",
@@ -102,14 +99,14 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             xaxis=dict(
                 tickmode="array",
                 tickvals=list(tmp["time_label"]),
-                ticktext=list(tmp["time_label"]),
+                ticktext=[f"T{t}" for t in tmp["time_label"]],
                 tickangle=-45,
                 tickfont=dict(size=10),
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 📥 Download chart data
+        # download data
         csv_buffer = StringIO()
         tmp.to_csv(csv_buffer, index=False)
         st.download_button(
@@ -118,7 +115,6 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             file_name=f"{pre}{metric}_{strike}_{chart_type}.csv",
             mime="text/csv",
         )
-
 
 # -----------------------------------------
 # Panel definition
@@ -164,7 +160,6 @@ def panel(name, color=None):
         plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
 
-
 # -----------------------------------------
 # Panels stacked
 # -----------------------------------------
@@ -172,14 +167,12 @@ panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
 
-
 # -----------------------------------------
 # Panel C – Correlation viewer
 # -----------------------------------------
 st.markdown("---")
-st.subheader("📈 Panel C – Correlation among metrics")
+st.subheader("📈 Panel C – Correlation among metrics")
 
-# pick strike
 strike_list = []
 if "CE_strikePrice" in df.columns:
     strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
@@ -189,8 +182,8 @@ elif "PE_strikePrice" in df.columns:
 if not strike_list:
     st.warning("No strikes detected.")
 else:
-    strike = st.selectbox("Strike (Correlation view)", strike_list)
-    opt_type = st.radio("Option Type", ["CE", "PE"], horizontal=True)
+    strike = st.selectbox("Strike (Correlation view)", strike_list)
+    opt_type = st.radio("Option Type", ["CE", "PE"], horizontal=True)
 
     pre = f"{opt_type}_"
     needed = [
@@ -207,24 +200,24 @@ else:
     else:
         corr = tmp.corr()
         st.write("Correlation matrix:")
-        st.dataframe(corr.style.background_gradient(cmap="RdYlGn", vmin=-1, vmax=1))
+        st.dataframe(corr)  # safe display (no matplotlib)
 
-        # heatmap
-        fig = px.imshow(corr, text_auto=True, color_continuous_scale="RdYlGn", title=f"{pre}Correlation Heatmap ({strike})")
+        fig = px.imshow(
+            corr,
+            text_auto=True,
+            color_continuous_scale="RdYlGn",
+            title=f"{pre}Correlation Heatmap ({strike})",
+        )
         fig.update_layout(height=450)
         st.plotly_chart(fig, use_container_width=True)
 
-        # download
         csv_buffer = StringIO()
         corr.to_csv(csv_buffer)
         st.download_button(
-            label=f"📥 Download correlation ({opt_type}_{strike}).csv",
+            label=f"📥 Download correlation ({opt_type}_{strike}).csv",
             data=csv_buffer.getvalue(),
             file_name=f"{opt_type}_{strike}_correlation.csv",
             mime="text/csv",
         )
-
-
-
 
 
