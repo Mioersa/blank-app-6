@@ -61,7 +61,7 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper (more robust)
+# Plot helper (fixed Bar chart error)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -80,7 +80,12 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp["time_label"] = tmp["time_label"].astype(str)
 
         fig_func = px.line if chart_type == "Line" else px.bar
-        fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+        # ✅ fixed error — only pass markers for line charts
+        if chart_type == "Line":
+            fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+        else:
+            fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}")
+
         if color:
             if chart_type == "Line":
                 fig.update_traces(line_color=color, marker_color=color)
