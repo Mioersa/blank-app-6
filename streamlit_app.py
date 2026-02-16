@@ -25,7 +25,7 @@ def get_time_from_filename(name):
         return None, None
     d, mo, y, h, mi, s = m.groups()
     full = f"{d}-{mo}-{y} {h}:{mi}:{s}"
-    short = f"{h}{mi}"
+    short = f"{h}{mi}"  # HHMM label
     return full, short
 
 # -----------------------------------------
@@ -62,7 +62,7 @@ for prefix in ["CE_", "PE_"]:
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
 # -----------------------------------------
-# Plot helper
+# Plot helper (no grouping)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -79,11 +79,14 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
         tmp["time_label"] = tmp["time_label"].astype(str)
 
+        # create sequential index for x-axis (no grouping)
+        tmp["x_index"] = range(len(tmp))
+
         fig_func = px.line if chart_type == "Line" else px.bar
         if chart_type == "Line":
-            fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
+            fig = fig_func(tmp, x="x_index", y=col, title=f"{pre}{label}", markers=True)
         else:
-            fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}")
+            fig = fig_func(tmp, x="x_index", y=col, title=f"{pre}{label}")
 
         if color:
             if chart_type == "Line":
@@ -91,22 +94,23 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             else:
                 fig.update_traces(marker_color=color)
 
-        # prefix 'T' to x labels
+        # show T-prefixed labels but **no grouping**
+        tick_texts = [f"T{t}" for t in tmp["time_label"]]
         fig.update_layout(
             height=400,
             xaxis_title="Time (HHMM)",
             yaxis_title=label,
             xaxis=dict(
                 tickmode="array",
-                tickvals=list(tmp["time_label"]),
-                ticktext=[f"T{t}" for t in tmp["time_label"]],
+                tickvals=list(tmp["x_index"]),
+                ticktext=tick_texts,
                 tickangle=-45,
                 tickfont=dict(size=10),
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # download data
+        # CSV download
         csv_buffer = StringIO()
         tmp.to_csv(csv_buffer, index=False)
         st.download_button(
@@ -166,58 +170,3 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
-
-# -----------------------------------------
-# Panel C – Correlation viewer
-# -----------------------------------------
-st.markdown("---")
-st.subheader("📈 Panel C – Correlation among metrics")
-
-strike_list = []
-if "CE_strikePrice" in df.columns:
-    strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
-elif "PE_strikePrice" in df.columns:
-    strike_list = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique().tolist())
-
-if not strike_list:
-    st.warning("No strikes detected.")
-else:
-    strike = st.selectbox("Strike (Correlation view)", strike_list)
-    opt_type = st.radio("Option Type", ["CE", "PE"], horizontal=True)
-
-    pre = f"{opt_type}_"
-    needed = [
-        f"{pre}lastPrice",
-        f"{pre}volChange",
-        f"{pre}oiChange",
-        f"{pre}impliedVolatility",
-    ]
-    existing = [c for c in needed if c in df.columns]
-    tmp = df[df[f"{pre}strikePrice"] == strike][existing].copy()
-
-    if tmp.empty or len(existing) < 2:
-        st.warning("No sufficient data for correlation.")
-    else:
-        corr = tmp.corr()
-        st.write("Correlation matrix:")
-        st.dataframe(corr)  # safe display (no matplotlib)
-
-        fig = px.imshow(
-            corr,
-            text_auto=True,
-            color_continuous_scale="RdYlGn",
-            title=f"{pre}Correlation Heatmap ({strike})",
-        )
-        fig.update_layout(height=450)
-        st.plotly_chart(fig, use_container_width=True)
-
-        csv_buffer = StringIO()
-        corr.to_csv(csv_buffer)
-        st.download_button(
-            label=f"📥 Download correlation ({opt_type}_{strike}).csv",
-            data=csv_buffer.getvalue(),
-            file_name=f"{opt_type}_{strike}_correlation.csv",
-            mime="text/csv",
-        )
-
-
