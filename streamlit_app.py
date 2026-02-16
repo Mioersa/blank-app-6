@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import re
+from io import StringIO
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
 st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
@@ -18,14 +19,16 @@ if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
 
+
 def get_time_from_filename(name):
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
     if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
     full = f"{d}-{mo}-{y} {h}:{mi}:{s}"
-    short = f"{h}{mi}"  # HHMM
+    short = f"{h}{mi}"
     return full, short
+
 
 # -----------------------------------------
 # Combine uploaded CSVs
@@ -60,8 +63,9 @@ for prefix in ["CE_", "PE_"]:
 
     df = df.groupby(strike_col, group_keys=False).apply(add_deltas)
 
+
 # -----------------------------------------
-# Plot helper (fixed Bar chart error)
+# Plot helper (bar fix + download option)
 # -----------------------------------------
 def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
     prefixes = ["CE_", "PE_"] if opt_type == "Both" else [f"{opt_type}_"]
@@ -71,8 +75,7 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         if col not in df.columns or strike_col not in df.columns:
             continue
 
-        tmp = df[df[strike_col] == strike].copy()
-        tmp = tmp.sort_values("timestamp")
+        tmp = df[df[strike_col] == strike].copy().sort_values("timestamp")
         if tmp.empty:
             continue
 
@@ -80,7 +83,7 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
         tmp["time_label"] = tmp["time_label"].astype(str)
 
         fig_func = px.line if chart_type == "Line" else px.bar
-        # ✅ fixed error — only pass markers for line charts
+        # ✅ Bar chart fix
         if chart_type == "Line":
             fig = fig_func(tmp, x="time_label", y=col, title=f"{pre}{label}", markers=True)
         else:
@@ -105,6 +108,17 @@ def plot_metric(metric, label, df, strike, opt_type, chart_type, color=None):
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        # 📥 Download chart data
+        csv_buffer = StringIO()
+        tmp.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label=f"📥 Download {pre}{label} data (CSV)",
+            data=csv_buffer.getvalue(),
+            file_name=f"{pre}{metric}_{strike}_{chart_type}.csv",
+            mime="text/csv",
+        )
+
 
 # -----------------------------------------
 # Panel definition
@@ -140,7 +154,7 @@ def panel(name, color=None):
             "opt_type": opt_type,
             "price_chart": price_chart,
             "vol_chart": vol_chart,
-            "oi_chart": oi_chart
+            "oi_chart": oi_chart,
         }
 
     saved = st.session_state.get(f"{key}_plot", None)
@@ -149,6 +163,7 @@ def panel(name, color=None):
         plot_metric("lastPrice", "Price", df, saved["strike"], saved["opt_type"], saved["price_chart"], color)
         plot_metric("volChange", "ΔVolume", df, saved["strike"], saved["opt_type"], saved["vol_chart"], color)
         plot_metric("oiChange", "ΔOI (per strike)", df, saved["strike"], saved["opt_type"], saved["oi_chart"], color)
+
 
 # -----------------------------------------
 # Panels stacked
