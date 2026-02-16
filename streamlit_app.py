@@ -8,13 +8,22 @@ st.set_page_config(page_title="Options Data Viewer", layout="wide")
 st.title("📊 Options Data Viewer (HHMM labels, stable Bar/Line)")
 
 # -----------------------------------------
-# Upload CSVs
+# File upload + reset button
 # -----------------------------------------
-files = st.file_uploader(
-    "Upload multiple CSVs (_DDMMYYYY_HHMMSS.csv)",
-    type=["csv"],
-    accept_multiple_files=True,
-)
+c1, c2 = st.columns([4, 1])
+with c1:
+    files = st.file_uploader(
+        "Upload multiple CSVs (_DDMMYYYY_HHMMSS.csv)",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="uploaded_files",
+    )
+with c2:
+    if st.button("🔄 Reset files"):
+        # retain everything else, just remove uploaded files
+        st.session_state.pop("uploaded_files", None)
+        st.experimental_rerun()
+
 if not files:
     st.info("👆 Upload option‑chain CSVs to start")
     st.stop()
@@ -171,3 +180,6 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
+
+
+
