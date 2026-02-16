@@ -171,3 +171,60 @@ def panel(name, color=None):
 panel("Panel A")
 st.markdown("---")
 panel("Panel B", color="green")
+
+
+# -----------------------------------------
+# Panel C – Correlation viewer
+# -----------------------------------------
+st.markdown("---")
+st.subheader("📈 Panel C – Correlation among metrics")
+
+# pick strike
+strike_list = []
+if "CE_strikePrice" in df.columns:
+    strike_list = sorted(pd.to_numeric(df["CE_strikePrice"], errors="coerce").dropna().unique().tolist())
+elif "PE_strikePrice" in df.columns:
+    strike_list = sorted(pd.to_numeric(df["PE_strikePrice"], errors="coerce").dropna().unique().tolist())
+
+if not strike_list:
+    st.warning("No strikes detected.")
+else:
+    strike = st.selectbox("Strike (Correlation view)", strike_list)
+    opt_type = st.radio("Option Type", ["CE", "PE"], horizontal=True)
+
+    pre = f"{opt_type}_"
+    needed = [
+        f"{pre}lastPrice",
+        f"{pre}volChange",
+        f"{pre}oiChange",
+        f"{pre}impliedVolatility",
+    ]
+    existing = [c for c in needed if c in df.columns]
+    tmp = df[df[f"{pre}strikePrice"] == strike][existing].copy()
+
+    if tmp.empty or len(existing) < 2:
+        st.warning("No sufficient data for correlation.")
+    else:
+        corr = tmp.corr()
+        st.write("Correlation matrix:")
+        st.dataframe(corr.style.background_gradient(cmap="RdYlGn", vmin=-1, vmax=1))
+
+        # heatmap
+        fig = px.imshow(corr, text_auto=True, color_continuous_scale="RdYlGn", title=f"{pre}Correlation Heatmap ({strike})")
+        fig.update_layout(height=450)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # download
+        csv_buffer = StringIO()
+        corr.to_csv(csv_buffer)
+        st.download_button(
+            label=f"📥 Download correlation ({opt_type}_{strike}).csv",
+            data=csv_buffer.getvalue(),
+            file_name=f"{opt_type}_{strike}_correlation.csv",
+            mime="text/csv",
+        )
+
+
+
+
+
