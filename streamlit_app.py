@@ -22,7 +22,7 @@ with c2:
     if st.button("🔄 Reset files"):
         # retain everything else, just remove uploaded files
         st.session_state.pop("uploaded_files", None)
-        st.experimental_rerun()
+        st.rerun()
 
 if not files:
     st.info("👆 Upload option‑chain CSVs to start")
