@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import re
-from io import StringIO
 
 st.set_page_config(page_title="Options Data Viewer", layout="wide")
 st.title("📊 Options Data Viewer (Δ‑Metrics + Correlations + Strength)")
@@ -20,44 +19,43 @@ if not files:
 
 def parse_time(name):
     m = re.search(r"_(\d{2})(\d{2})(\d{4})_(\d{2})(\d{2})(\d{2})", name)
-    if not m: 
+    if not m:
         return None, None
     d, mo, y, h, mi, s = m.groups()
     return f"{d}-{mo}-{y} {h}:{mi}:{s}", f"{h}{mi}"
 
+def strip_time_tag(name):
+    return re.sub(r"_(\d{2})(\d{2})(\d{4})_(\d{6})(?=\.)?", "", name)
+
 # -----------------------------------------
-# Handle duplicates — keep latest version
+# Handle duplicates — keep only latest version per base name
 # -----------------------------------------
-unique_files = {}
+latest_files = {}
 for f in files:
     full, short = parse_time(f.name)
     if not full:
-        st.warning(f"Filename format not recognized: {f.name}")
+        st.warning(f"Skipping unrecognized filename: {f.name}")
         continue
-    unique_files[f.name] = (f, full)
-
-# Consolidate by base name ignoring timestamp suffixes
-def strip_time_tag(name):
-    return re.sub(r"_\d{2}\d{2}\d{4}_\d{6}", "", name)
-
-latest_files = {}
-for fname, (file_obj, full_ts) in unique_files.items():
-    base = strip_time_tag(fname)
-    ts = pd.to_datetime(full_ts, format="%d-%m-%Y %H:%M:%S", errors="coerce")
+    base = strip_time_tag(f.name)
+    ts = pd.to_datetime(full, format="%d-%m-%Y %H:%M:%S", errors="coerce")
     if base not in latest_files or ts > latest_files[base][1]:
-        latest_files[base] = (file_obj, ts)
+        latest_files[base] = (f, ts)
 
 frames = []
 for base, (f, ts) in latest_files.items():
     d = pd.read_csv(f)
-    full_time = ts.strftime("%d-%m-%Y %H:%M:%S")
-    d["timestamp"] = full_time
+    d["timestamp"] = ts.strftime("%d-%m-%Y %H:%M:%S")
     d["time_label"] = ts.strftime("%H%M")
     frames.append(d)
 
+# combine all “latest” files
 df = pd.concat(frames, ignore_index=True)
 df.dropna(subset=["timestamp"], inplace=True)
 df["timestamp"] = pd.to_datetime(df["timestamp"], format="%d-%m-%Y %H:%M:%S", errors="coerce")
+
+# ✅ only drop exact duplicates across same timestamp+strike+side metrics
+key_cols = [c for c in df.columns if "timestamp" in c or "strikePrice" in c or "openInterest" in c]
+df = df.drop_duplicates(subset=key_cols, keep="last")
 df = df.sort_values("timestamp").reset_index(drop=True)
 
 # -----------------------------------------
@@ -85,7 +83,6 @@ for pre in ["CE_", "PE_"]:
 
     df = df.groupby(strike, group_keys=False).apply(add_d)
 
-# derived extras
 if {"CE_openInterest", "PE_openInterest"}.issubset(df.columns):
     df["OI_imbalance"] = (df["CE_openInterest"] - df["PE_openInterest"]) / (
         df["CE_openInterest"] + df["PE_openInterest"] + 1e-9
@@ -126,7 +123,7 @@ def plot_metric(metric, label, df, strike, opt_type, style, color=None):
         st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------------------
-# Panels A/B
+# Panel A/B
 # -----------------------------------------
 def panel(name, color=None):
     st.subheader(name)
@@ -170,8 +167,19 @@ if not strikes:
     st.warning("No strikes available.")
 else:
     strike = st.selectbox("Strike (Relation check)", strikes)
-    min_t, max_t = df["timestamp"].min().to_pydatetime(), df["timestamp"].max().to_pydatetime()
-    t1, t2 = st.slider("Select time range", min_value=min_t, max_value=max_t, value=(min_t, max_t), format="HH:mm")
+    min_t, max_t = df["timestamp"].min(), df["timestamp"].max()
+    if pd.isna(min_t) or pd.isna(max_t) or min_t == max_t:
+        st.warning("Not enough timestamp variation for time range selection.")
+        st.stop()
+
+    # ✅ safe slider version
+    t1, t2 = st.slider(
+        "Select time range",
+        min_value=min_t.to_pydatetime(),
+        max_value=max_t.to_pydatetime(),
+        value=(min_t.to_pydatetime(), max_t.to_pydatetime()),
+    )
+
     df_r = df[(df["timestamp"] >= t1) & (df["timestamp"] <= t2)]
     st.markdown(f"### Strike {strike} | {t1.strftime('%H:%M')}–{t2.strftime('%H:%M')}")
 
@@ -240,15 +248,14 @@ if results:
     def color_bias(v):
         return f"background-color:{bias_colors.get(v, '')}"
     st.dataframe(out.style.applymap(color_bias, subset=["Bias"]).format(precision=3))
-
     overall = (
         "🟢 Overall Bias = CE (Bullish)"
         if out["CE_Strength"].mean() > out["PE_Strength"].mean()
         else "🔴 Overall Bias = PE (Bearish)"
     )
     st.markdown(f"### {overall}")
-
-    fig = px.bar(out, x="Strike", y=["CE_Strength", "PE_Strength"], barmode="group", title="Composite Strength (CE vs PE)")
+    fig = px.bar(out, x="Strike", y=["CE_Strength", "PE_Strength"],
+                 barmode="group", title="Composite Strength (CE vs PE)")
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No valid strength data yet.")
